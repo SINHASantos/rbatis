@@ -1,77 +1,56 @@
-use crate::executor::{RBatisConnExecutor, RBatisTxExecutor};
-use crate::plugin::intercept::SqlIntercept;
-use crate::plugin::log::{LogPlugin, RbatisLogPlugin};
-use crate::snowflake::new_snowflake_id;
-use crate::Error;
+use crate::executor::{Executor, RBatisConnExecutor, RBatisTxExecutor};
+use crate::intercept_log::LogInterceptor;
+use crate::plugin::intercept::Intercept;
+use crate::plugin::intercept_page::PageIntercept;
+use crate::snowflake::Snowflake;
+use crate::table_sync::{sync, ColumnMapper};
+use crate::{DefaultPool, Error};
 use dark_std::sync::SyncVec;
-use once_cell::sync::OnceCell;
-use rbdc::db::Connection;
-use rbdc::pool::{ManagerPorxy, Pool};
-use std::fmt::{Debug, Formatter};
-use std::sync::Arc;
+use log::LevelFilter;
+use rbdc::pool::conn_manager::ConnManager;
+use rbdc::pool::Pool;
+use rbs::to_value;
+use serde::Serialize;
+use std::fmt::Debug;
+use std::ops::Deref;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-/// rbatis engine
-#[derive(Clone)]
-pub struct Rbatis {
-    // the connection pool,use OnceCell init this
-    pub pool: Arc<OnceCell<Pool>>,
-    // sql intercept vec chain
-    pub sql_intercepts: Arc<SyncVec<Box<dyn SqlIntercept>>>,
-    // log plugin
-    pub log_plugin: Arc<Box<dyn LogPlugin>>,
+/// RBatis engine
+#[derive(Clone, Debug)]
+pub struct RBatis {
+    // the connection pool
+    pub pool: Arc<OnceLock<Box<dyn Pool>>>,
+    // intercept vec(default the intercepts[0] is a log interceptor)
+    pub intercepts: Arc<SyncVec<Arc<dyn Intercept>>>,
+    //rb task id gen
+    pub task_id_generator: Arc<Snowflake>,
 }
 
-impl Debug for Rbatis {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Rbatis")
-            .field("pool", &self.pool)
-            .field("sql_intercepts", &self.sql_intercepts.len())
-            .finish()
-    }
-}
-
-impl Default for Rbatis {
-    fn default() -> Rbatis {
-        Rbatis::new()
-    }
-}
-
-///Rbatis Options
-pub struct RbatisOption {
-    /// sql intercept vec chain
-    pub sql_intercepts: SyncVec<Box<dyn SqlIntercept>>,
-    /// log plugin
-    pub log_plugin: Box<dyn LogPlugin>,
-}
-
-impl Default for RbatisOption {
-    fn default() -> Self {
-        Self {
-            sql_intercepts: SyncVec::new(),
-            log_plugin: Box::new(RbatisLogPlugin::default()) as Box<dyn LogPlugin>,
+impl Default for RBatis {
+    fn default() -> RBatis {
+        RBatis {
+            pool: Arc::new(Default::default()),
+            intercepts: Arc::new(SyncVec::new()),
+            task_id_generator: Arc::new(Snowflake::default()),
         }
     }
 }
 
-impl Rbatis {
-    ///create an Rbatis
+impl RBatis {
+    /// create an RBatis
+    /// add intercept use LogInterceptor
     pub fn new() -> Self {
-        return Self::new_with_opt(RbatisOption::default());
+        let rb = RBatis::default();
+        //default use LogInterceptor
+        rb.intercepts.push(Arc::new(PageIntercept::new()));
+        rb.intercepts
+            .push(Arc::new(LogInterceptor::new(LevelFilter::Debug)));
+        rb
     }
 
-    ///new Rbatis from Option
-    pub fn new_with_opt(option: RbatisOption) -> Self {
-        return Self {
-            pool: Arc::new(OnceCell::new()),
-            sql_intercepts: Arc::new(option.sql_intercepts),
-            log_plugin: Arc::new(option.log_plugin),
-        };
-    }
-
-    /// init() and try_acquire a connection.
-    /// use init() replace this method
-    #[deprecated]
+    /// self.init(driver, url)? and self.try_acquire().await? a connection.
+    /// DefaultPool use FastPool
     pub async fn link<Driver: rbdc::db::Driver + 'static>(
         &self,
         driver: Driver,
@@ -82,49 +61,67 @@ impl Rbatis {
         Ok(())
     }
 
-    /// init pool
+    /// init pool.
+    /// The default connection pool only binds one type of database driver, please use separate RBatis for different database drivers
+    /// DefaultPool is FastPool,if you want other pool please use init_option
     pub fn init<Driver: rbdc::db::Driver + 'static>(
         &self,
         driver: Driver,
         url: &str,
     ) -> Result<(), Error> {
         if url.is_empty() {
-            return Err(Error::from("[rbatis] link url is empty!"));
+            return Err(Error::from("[rb] link url is empty!"));
         }
         let mut option = driver.default_option();
         option.set_uri(url)?;
-        let pool = Pool::new_box(Box::new(driver), option)?;
+        let pool = DefaultPool::new(ConnManager::new_arc(
+            Arc::new(Box::new(driver)),
+            Arc::new(option),
+        ))?;
         self.pool
-            .set(pool)
+            .set(Box::new(pool))
             .map_err(|_e| Error::from("pool set fail!"))?;
-        return Ok(());
+        Ok(())
     }
 
-    /// init pool
-    pub async fn init_builder<Driver: rbdc::db::Driver + 'static>(
-        &self,
-        builder: rbdc::deadpool::managed::PoolBuilder<
-            ManagerPorxy,
-            rbdc::deadpool::managed::Object<ManagerPorxy>,
-        >,
-        driver: Driver,
-        url: &str,
-    ) -> Result<(), Error> {
-        if url.is_empty() {
-            return Err(Error::from("[rbatis] link url is empty!"));
-        }
-        let mut option = driver.default_option();
-        option.set_uri(url)?;
-        let pool = Pool::new_builder(builder, Box::new(driver), option)?;
-        self.pool
-            .set(pool)
-            .map_err(|_e| Error::from("pool set fail!"))?;
-        return Ok(());
-    }
-
-    /// init pool by DBPoolOptions
+    /// init pool by DBPoolOptions and Pool
     /// for example:
+    ///```
+    /// use rbatis::{DefaultPool, RBatis};
+    /// use rbdc_sqlite::{SqliteConnectOptions, SqliteDriver};
+    /// let rb=RBatis::new();
     ///
+    /// let opts=SqliteConnectOptions::new();
+    /// let _ = rb.init_option::<SqliteDriver, SqliteConnectOptions, DefaultPool>(SqliteDriver{},opts);
+    /// ```
+    ///
+    pub fn init_option<
+        Driver: rbdc::db::Driver + 'static,
+        ConnectOptions: rbdc::db::ConnectOptions,
+        Pool: rbdc::pool::Pool + 'static,
+    >(
+        &self,
+        driver: Driver,
+        option: ConnectOptions,
+    ) -> Result<(), Error> {
+        let pool = Pool::new(ConnManager::new_arc(
+            Arc::new(Box::new(driver)),
+            Arc::new(Box::new(option)),
+        ))?;
+        self.pool
+            .set(Box::new(pool))
+            .map_err(|_e| Error::from("pool set fail!"))?;
+        Ok(())
+    }
+
+    pub fn init_pool<Pool: rbdc::pool::Pool + 'static>(&self, pool: Pool) -> Result<(), Error> {
+        self.pool
+            .set(Box::new(pool))
+            .map_err(|_e| Error::from("pool set fail!"))?;
+        Ok(())
+    }
+
+    #[deprecated(note = "please use init_option()")]
     pub fn init_opt<
         Driver: rbdc::db::Driver + 'static,
         ConnectOptions: rbdc::db::ConnectOptions,
@@ -133,38 +130,34 @@ impl Rbatis {
         driver: Driver,
         options: ConnectOptions,
     ) -> Result<(), Error> {
-        let pool = Pool::new(driver, options)?;
-        self.pool
-            .set(pool)
-            .map_err(|_e| Error::from("pool set fail!"))?;
-        return Ok(());
+        self.init_option::<Driver, ConnectOptions, DefaultPool>(driver, options)
     }
 
-    /// set_log_plugin
-    pub fn set_log_plugin(&mut self, arg: impl LogPlugin + 'static) {
-        self.log_plugin = Arc::new(Box::new(arg));
-    }
-
-    /// set_sql_intercepts for many
-    pub fn set_sql_intercepts(&mut self, arg: Vec<Box<dyn SqlIntercept>>) {
-        self.sql_intercepts = Arc::new(SyncVec::from(arg));
+    /// set_intercepts for many.
+    /// notice:
+    /// do not forget add PageIntercept!
+    pub fn set_intercepts(&mut self, arg: Vec<Arc<dyn Intercept>>) {
+        self.intercepts = Arc::new(SyncVec::from(arg));
     }
 
     /// get conn pool
     ///
     /// can set option for example:
     /// ```rust
-    /// use rbatis::Rbatis;
-    /// let rb = Rbatis::new();
-    /// //rb.init(rbdc_sqlite::driver::SqliteDriver {},"sqlite://target/sqlite.db");
-    /// //rb.get_pool().unwrap().resize(10);
+    /// use rbatis::RBatis;
+    /// #[tokio::main]
+    /// async fn main(){
+    ///   let rb = RBatis::new();
+    ///   rb.init(rbdc_sqlite::driver::SqliteDriver{},"sqlite://target/sqlite.db").unwrap();
+    ///   rb.get_pool().unwrap().set_max_open_conns(10).await;
+    /// }
     /// ```
-    pub fn get_pool(&self) -> Result<&Pool, Error> {
+    pub fn get_pool(&self) -> Result<&dyn Pool, Error> {
         let p = self
             .pool
             .get()
-            .ok_or_else(|| Error::from("[rbatis] rbatis pool not inited!"))?;
-        return Ok(p);
+            .ok_or_else(|| Error::from("[rb] rbatis pool not inited!"))?;
+        Ok(p.deref())
     }
 
     /// get driver type
@@ -177,51 +170,187 @@ impl Rbatis {
     pub async fn acquire(&self) -> Result<RBatisConnExecutor, Error> {
         let pool = self.get_pool()?;
         let conn = pool.get().await?;
-        return Ok(RBatisConnExecutor {
-            conn: Box::new(conn),
-            rb: self.clone(),
-        });
+        Ok(RBatisConnExecutor::new(
+            self.task_id_generator.generate(),
+            conn,
+            self.clone(),
+        ))
     }
 
     /// try get an DataBase Connection used for the next step
     pub async fn try_acquire(&self) -> Result<RBatisConnExecutor, Error> {
+        self.try_acquire_timeout(Duration::from_secs(0)).await
+    }
+
+    /// try get an DataBase Connection used for the next step
+    pub async fn try_acquire_timeout(&self, d: Duration) -> Result<RBatisConnExecutor, Error> {
         let pool = self.get_pool()?;
-        let mut default = pool.inner.timeouts().clone();
-        default.wait = Some(Duration::ZERO);
-        let conn = pool.timeout_get(&default).await?;
-        return Ok(RBatisConnExecutor {
-            conn: Box::new(conn),
-            rb: self.clone(),
-        });
+        let conn = pool.get_timeout(d).await?;
+        Ok(RBatisConnExecutor::new(
+            self.task_id_generator.generate(),
+            conn,
+            self.clone(),
+        ))
     }
 
     /// get an DataBase Connection,and call begin method,used for the next step
     pub async fn acquire_begin(&self) -> Result<RBatisTxExecutor, Error> {
-        let pool = self.get_pool()?;
-        let mut conn = pool.get().await?;
-        conn.exec("begin", vec![]).await?;
-        return Ok(RBatisTxExecutor {
-            tx_id: new_snowflake_id(),
-            conn: Box::new(conn),
-            rb: self.clone(),
-            done: false,
-        });
+        let conn = self.acquire().await?;
+        Ok(conn.begin().await?)
     }
 
     /// try get an DataBase Connection,and call begin method,used for the next step
     pub async fn try_acquire_begin(&self) -> Result<RBatisTxExecutor, Error> {
-        let mut conn = self.try_acquire().await?;
-        conn.exec("begin", vec![]).await?;
-        return Ok(RBatisTxExecutor {
-            tx_id: new_snowflake_id(),
-            conn: conn.conn,
-            rb: self.clone(),
-            done: false,
-        });
+        let conn = self.try_acquire().await?;
+        let executor = conn.begin().await?;
+        Ok(executor)
     }
 
-    /// is debug mode
+    /// is RBatis enable debug_mode?
     pub fn is_debug_mode(&self) -> bool {
         crate::decode::is_debug_mode()
+    }
+
+    /// get intercept from name
+    /// the default name just like `let name = std::any::type_name::<LogInterceptor>()`
+    ///  ```rust
+    /// use std::sync::Arc;
+    /// use async_trait::async_trait;
+    /// use rbatis::RBatis;
+    /// use rbatis::intercept::{Intercept};
+    ///
+    /// #[derive(Debug)]
+    /// pub struct MockIntercept {
+    /// }
+    /// #[async_trait]
+    /// impl Intercept for MockIntercept {
+    /// }
+    ///  //use get_intercept_type
+    ///  let mut rb = RBatis::new();
+    ///  rb.set_intercepts(vec![Arc::new(MockIntercept{})]);
+    ///  let name = std::any::type_name::<MockIntercept>();
+    ///  let intercept = rb.get_intercept_dyn(name);
+    /// ```
+    pub fn get_intercept_dyn(&self, name: &str) -> Option<&dyn Intercept> {
+        for x in self.intercepts.iter() {
+            if name == x.name() {
+                return Some(x.as_ref());
+            }
+        }
+        None
+    }
+
+    /// get intercept from name
+    ///  ```rust
+    /// use std::sync::Arc;
+    /// use async_trait::async_trait;
+    /// use rbatis::RBatis;
+    /// use rbatis::intercept::{Intercept};
+    ///
+    /// #[derive(Debug)]
+    /// pub struct MockIntercept {
+    /// }
+    /// #[async_trait]
+    /// impl Intercept for MockIntercept {
+    /// }
+    ///  //use get_intercept_type
+    ///  let mut rb = RBatis::new();
+    ///  rb.set_intercepts(vec![Arc::new(MockIntercept{})]);
+    ///  let intercept = rb.get_intercept::<MockIntercept>();
+    /// ```
+    pub fn get_intercept<T: Intercept>(&self) -> Option<&T> {
+        let name = std::any::type_name::<T>();
+        for item in self.intercepts.iter() {
+            if name == item.name() {
+                //this is safe
+                let call: &T = unsafe { std::mem::transmute_copy(&item.as_ref()) };
+                return Some(call);
+            }
+        }
+        None
+    }
+
+    /// how to ge name
+    /// ```rust
+    /// pub struct Intercept{}
+    /// let name = std::any::type_name::<Intercept>();
+    /// ```
+    pub fn remove_intercept_dyn<T: Intercept>(&self, name: &str) -> Option<Arc<dyn Intercept>> {
+        let mut index = 0;
+        for item in self.intercepts.iter() {
+            if item.name() == name {
+                //this is safe
+                return self.intercepts.remove(index);
+            }
+            index += 1;
+        }
+        None
+    }
+
+    /// create table if not exists, add column if not exists
+    ///
+    /// ```rust
+    /// use rbatis::executor::Executor;
+    /// use rbatis::RBatis;
+    /// use rbatis::table_sync::{SqliteTableMapper};
+    ///
+    /// /// let rb = RBatis::new();
+    /// /// let conn = rb.acquire().await;
+    /// pub async fn do_sync_table(conn: &dyn Executor){
+    ///       let map = rbs::to_value!{
+    ///             "id":"INT",
+    ///             "name":"TEXT",
+    ///      };
+    ///      let _ = RBatis::sync(conn,&SqliteTableMapper{},&map,"user").await;
+    /// }
+    /// ```
+    ///
+    /// sync table struct
+    /// ```rust
+    /// use rbatis::executor::Executor;
+    /// use rbatis::RBatis;
+    /// use rbatis::table_sync::{SqliteTableMapper};
+    ///
+    /// #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+    /// pub struct User{
+    ///   pub id:String,
+    ///   pub name: Option<String>
+    /// }
+    ///
+    /// /// let rb = RBatis::new();
+    /// /// let conn = rb.acquire().await;
+    /// pub async fn do_sync_table(conn: &dyn Executor){
+    ///      let table = User{id: "".to_string(), name: Some("".to_string())};
+    ///      let _ = RBatis::sync(conn,&SqliteTableMapper{},&table,"user").await;
+    /// }
+    /// ```
+    ///
+    /// sync table struct (custom string column type)
+    /// ```rust
+    /// use rbatis::executor::Executor;
+    /// use rbatis::RBatis;
+    /// use rbatis::table_sync::{MysqlTableMapper};
+    ///
+    /// #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+    /// pub struct User{
+    ///   pub id:String,
+    ///   pub name: Option<String>
+    /// }
+    ///
+    /// /// let rb = RBatis::new();
+    /// /// let conn = rb.acquire().await;
+    /// pub async fn do_sync_table_mysql(conn: &dyn Executor){
+    ///      //empty string: auto create type,  "VARCHAR(50)" -> sqlite type
+    ///      let table = User{id: "".to_string(), name: Some("VARCHAR(50)".to_string())};
+    ///      let _ = RBatis::sync(conn,&MysqlTableMapper{},&table,"user").await;
+    /// }
+    /// ```
+    pub async fn sync<T: Serialize>(
+        executor: &dyn Executor,
+        column_mapper: &dyn ColumnMapper,
+        table: &T,
+        table_name: &str,
+    ) -> Result<(), Error> {
+        sync(executor, column_mapper, to_value!(table), table_name).await
     }
 }

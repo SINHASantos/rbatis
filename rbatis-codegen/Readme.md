@@ -31,8 +31,8 @@ from html logic just like:
 source code for example:
 ```rust
 use rbatis::executor::Executor;
-use rbatis::rbdc::datetime::FastDateTime;
-use rbatis::sql::page::{Page, PageRequest};
+use rbatis::rbdc::datetime::DateTime;
+use rbatis::plugin::page::{Page, PageRequest};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BizActivity {
     pub id: Option<String>,
@@ -44,24 +44,26 @@ pub struct BizActivity {
     pub sort: Option<String>,
     pub status: Option<i32>,
     pub remark: Option<String>,
-    pub create_time: Option<FastDateTime>,
+    pub create_time: Option<DateTime>,
     pub version: Option<i64>,
     pub delete_flag: Option<i32>,
 }
 #[html_sql("example/example.html")]
-async fn select_by_condition(rb: &mut dyn Executor, page_req: &PageRequest, name: &str, dt: &FastDateTime) -> Vec<BizActivity> {
+async fn select_by_condition(rb: &dyn Executor, page_req: &PageRequest, name: &str, dt: &DateTime) -> Vec<BizActivity> {
     impled!()
 }
 ```
 
 ```log
-2022-08-17 17:16:23.624803 INFO rbatis::plugin::log - [rbatis] [402390551883812864] query  ==> select * from biz_activity where name like ? and create_time < ? and id != '-1' and  name != ''
-                                                      [rbatis]                      Args   ==> ["test",DateTime("2022-08-17 17:16:23")]
+2022-08-17 17:16:23.624803 INFO rbatis::plugin::log - [rb] [402390551883812864] query  ==> select * from biz_activity where name like ? and create_time < ? and id != '-1' and  name != ''
+                                                      [rb]                      Args   ==> ["test",DateTime("2022-08-17 17:16:23")]
 ```
 
 
 # How it works
-* 1 Whenever user define `html_sql` method(Of course, `py_sql` The implementation is also based on the `py_sql`  syntax tree  escaped to `html_sql`)
+
+### 1. Whenever user define `html_sql` method(Of course, `py_sql` The implementation is also based on the `py_sql`  syntax tree  escaped to `html_sql`)
+
 ```rust
 #[html_sql(r#"<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "https://raw.githubusercontent.com/rbatis/rbatis/master/rbatis-codegen/mybatis-3-mapper.dtd">
   <select id="select_by_condition">
@@ -71,21 +73,29 @@ async fn select_by_condition(rb: &mut dyn Executor, page_req: &PageRequest, name
         </if>
   </select>"#)]
 async fn select_by_condition(
-    rb: &mut dyn Executor,
+    rb: &dyn Executor,
     name: &str,
     a: bool,
 ) -> rbatis::Result<Vec<BizActivity>> {
     impled!()
 }
 ```
-* 2 The function body is generated through the process macro via rbatis-codegen
+
+### 2. RBatis expr
+
+* RBatis expr is ```#{name}```,```#{age + 1}```,```${age + 1}``` and  code test:``` <if test="dt >= '2009-12-12 00:00:00'"></if> ```
+* RBatis expr will be Convert to original rust code,if RBatis expression = ```#{age + 1}```,the code = ``` rb_arg_map["age"].op_add(1) ```
+* RBatis expr directly use strings to compare and process date types,just like ``` <if test="dt >= '2009-12-12 00:00:00'"></if> ```,``` #{dt >= '2009-12-12 00:00:00'}```
+
+### 3. The function body is generated through the process macro via rbatis-codegen
+
 ```rust
 // pub trait Executor{ //this is rbatis's Executor
 // fn exec(&mut self, sql: &str, args: Vec<Value>) -> BoxFuture<'_, Result<ExecResult, Error>>;
 //  fn query(&mut self, sql: &str, args: Vec<Value>) -> BoxFuture<'_, Result<Value, Error>>;
 // }
 pub async fn select_by_condition(
-    rb: &mut dyn Executor,
+    rb: &dyn Executor,
     name: &str,
     a: bool,
 ) -> rbatis::Result<Vec<BizActivity>> {
@@ -95,8 +105,8 @@ pub async fn select_by_condition(
         rbs::to_value(name).unwrap_or_default(),
     );
     rb_arg_map.insert("a".to_string().into(), rbs::to_value(a).unwrap_or_default());
-    use rbatis::executor::RbatisRef;
-    let driver_type = rb.rbatis_ref().driver_type()?;
+    use rbatis::executor::RBatisRef;
+    let driver_type = rb.driver_type()?;
     use rbatis::rbatis_codegen;
     pub fn impl_html_sql(arg: &rbs::Value, _tag: char) -> (String, Vec<rbs::Value>) {
         use rbatis_codegen::ops::*;

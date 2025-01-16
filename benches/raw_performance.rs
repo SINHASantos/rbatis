@@ -5,46 +5,89 @@
 #![allow(unused_assignments)]
 #![allow(unused_must_use)]
 #![allow(dead_code)]
-#![allow(private_in_public)]
 #![feature(test)]
-#![feature(bench_black_box)]
 extern crate test;
 
 use futures_core::future::BoxFuture;
-use rbatis::rbatis::Rbatis;
+use rbatis::rbatis::RBatis;
 use rbatis::{impl_insert, impl_select};
 use rbdc::db::{ConnectOptions, Connection, Driver, ExecResult, Row};
-use rbdc::{block_on, Error};
+use rbdc::rt::block_on;
+use rbdc::Error;
 use rbs::Value;
 use std::any::Any;
 use test::Bencher;
 
-//cargo test --release --package rbatis --bench raw_performance bench_raw  --no-fail-fast -- --exact -Z unstable-options --show-output
+pub trait QPS {
+    fn qps(&self, total: u64);
+    fn time(&self, total: u64);
+    fn cost(&self);
+}
 
-// ---- bench_raw stdout ----(macos,cpu-M1Max)
-// Time: 70.59475ms ,each:705 ns/op
-// QPS: 1416454 QPS/s
+impl QPS for std::time::Instant {
+    fn qps(&self, total: u64) {
+        let time = self.elapsed();
+        println!(
+            "QPS: {} QPS/s",
+            (total as u128 * 1000000000 as u128 / time.as_nanos() as u128)
+        );
+    }
+
+    fn time(&self, total: u64) {
+        let time = self.elapsed();
+        println!(
+            "Time: {:?} ,each:{} ns/op",
+            &time,
+            time.as_nanos() / (total as u128)
+        );
+    }
+
+    fn cost(&self) {
+        let time = self.elapsed();
+        println!("cost:{:?}", time);
+    }
+}
+
+#[macro_export]
+macro_rules! rbench {
+    ($total:expr,$body:block) => {{
+        let now = std::time::Instant::now();
+        for _ in 0..$total {
+            $body;
+        }
+        now.time($total);
+        now.qps($total);
+    }};
+}
+
+//cargo test --release --package rbatis --bench raw_performance bench_raw  --no-fail-fast -- --exact -Z unstable-options --show-output
+// ---- bench_raw stdout ----(windows)
+//Time: 52.4187ms ,each:524 ns/op
+//QPS: 1906435 QPS/s
+//---- bench_raw stdout ----(Apple M1 macos)
+//Time: 48.544834ms ,each:485 ns/op
+//QPS: 2059820 QPS/s
 #[test]
 fn bench_raw() {
     let f = async {
-        let rbatis = Rbatis::new();
+        let rbatis = RBatis::new();
         rbatis.init(MockDriver {}, "mock://");
         rbatis.acquire().await.unwrap();
-        rbatis::bench!(100000, {
+        rbench!(100000, {
             let v = rbatis.query_decode::<Vec<i32>>("", vec![]).await;
         });
     };
-    block_on!(f);
+    block_on(f);
 }
 
 //cargo test --release --package rbatis --bench raw_performance bench_insert  --no-fail-fast -- --exact -Z unstable-options --show-output
 //---- bench_insert stdout ----(macos,cpu-M1Max)
-// use Time: 380.693416ms ,each:3806 ns/op
-// use QPS: 262676 QPS/s
+// Time: 346.576666ms ,each:3465 ns/op
+// QPS: 288531 QPS/s
 #[test]
 fn bench_insert() {
     let f = async {
-        let rbatis = Rbatis::new();
+        let rbatis = RBatis::new();
         rbatis.init(MockDriver {}, "mock://").unwrap();
         rbatis.acquire().await.unwrap();
         let mut t = MockTable {
@@ -57,32 +100,32 @@ fn bench_insert() {
             sort: None,
             status: Some(2),
             remark: Some("2".into()),
-            create_time: Some(rbdc::datetime::FastDateTime::now()),
+            create_time: Some(rbdc::datetime::DateTime::now()),
             version: Some(1),
             delete_flag: Some(1),
         };
-        rbatis::bench!(100000, {
+        rbench!(100000, {
             MockTable::insert(&mut rbatis.clone(), &t).await.unwrap();
         });
     };
-    block_on!(f);
+    block_on(f);
 }
 
 //cargo test --release --color=always --package rbatis --bench raw_performance bench_select --no-fail-fast --  --exact -Z unstable-options --show-output
 // ---- bench_select stdout ----
-// Time: 112.927916ms ,each:1129 ns/op
-// QPS: 885486 QPS/s
+// Time: 111.495375ms ,each:1114 ns/op
+// QPS: 896873 QPS/s
 #[test]
 fn bench_select() {
     let f = async {
-        let rbatis = Rbatis::new();
+        let rbatis = RBatis::new();
         rbatis.init(MockDriver {}, "mock://").unwrap();
         rbatis.acquire().await.unwrap();
-        rbatis::bench!(100000, {
+        rbench!(100000, {
             MockTable::select_all(&mut rbatis.clone()).await.unwrap();
         });
     };
-    block_on!(f);
+    block_on(f);
 }
 
 #[derive(Debug, Clone)]
@@ -150,10 +193,6 @@ impl ConnectOptions for MockConnectOptions {
     fn set_uri(&mut self, uri: &str) -> Result<(), Error> {
         Ok(())
     }
-
-    fn uppercase_self(&self) -> &(dyn Any + Send + Sync) {
-        self
-    }
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -167,7 +206,7 @@ struct MockTable {
     pub sort: Option<String>,
     pub status: Option<i32>,
     pub remark: Option<String>,
-    pub create_time: Option<rbdc::datetime::FastDateTime>,
+    pub create_time: Option<rbdc::datetime::DateTime>,
     pub version: Option<i64>,
     pub delete_flag: Option<i32>,
 }

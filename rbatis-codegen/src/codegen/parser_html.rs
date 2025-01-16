@@ -1,15 +1,16 @@
-use std::collections::BTreeMap;
-use std::fs::File;
-use std::io::Read;
-
 use proc_macro2::{Ident, Span};
 use quote::{quote, ToTokens};
-use syn::{AttributeArgs, Expr, ItemFn};
+use std::collections::{BTreeMap, HashMap};
+use std::fs::File;
+use std::io::Read;
+use std::path::PathBuf;
+use syn::{ItemFn, LitStr};
 use url::Url;
 
 use crate::codegen::loader_html::{load_html, Element};
 use crate::codegen::proc_macro::TokenStream;
 use crate::codegen::string_util::find_convert_string;
+use crate::codegen::ParseArgs;
 
 use crate::error::Error;
 
@@ -71,7 +72,7 @@ fn include_replace(htmls: Vec<Element>, sql_map: &mut BTreeMap<String, Element>)
                 sql_map.insert(
                     x.attrs
                         .get("id")
-                        .expect("[rbatis] <sql> element must have id!")
+                        .expect("[rbatis-codegen] <sql> element must have id!")
                         .clone(),
                     x.clone(),
                 );
@@ -80,21 +81,35 @@ fn include_replace(htmls: Vec<Element>, sql_map: &mut BTreeMap<String, Element>)
                 let ref_id = x
                     .attrs
                     .get("refid")
-                    .expect("[rbatis] <include> element must have attr <include refid=\"\">!")
+                    .expect(
+                        "[rbatis-codegen] <include> element must have attr <include refid=\"\">!",
+                    )
                     .clone();
                 let url;
                 if ref_id.contains("://") {
                     url = Url::parse(&ref_id).expect(&format!(
-                        "[rbatis] parse <include refid=\"{}\"> fail!",
+                        "[rbatis-codegen] parse <include refid=\"{}\"> fail!",
                         ref_id
                     ));
                 } else {
                     url = Url::parse(&format!("current://current?refid={}", ref_id)).expect(
-                        &format!("[rbatis] parse <include refid=\"{}\"> fail!", ref_id),
+                        &format!(
+                            "[rbatis-codegen] parse <include refid=\"{}\"> fail!",
+                            ref_id
+                        ),
                     );
                 }
+                let mut manifest_dir =
+                    std::env::var("CARGO_MANIFEST_DIR").expect("Failed to read CARGO_MANIFEST_DIR");
+                manifest_dir.push_str("/");
+
                 let path = url.host_str().unwrap_or_default().to_string()
                     + url.path().trim_end_matches("/").trim_end_matches("\\");
+                let mut file_path = PathBuf::from(&path);
+                if file_path.is_relative() {
+                    file_path = PathBuf::from(format!("{}{}", manifest_dir, path));
+                }
+
                 match url.scheme() {
                     "file" => {
                         let mut ref_id = ref_id.clone();
@@ -108,9 +123,10 @@ fn include_replace(htmls: Vec<Element>, sql_map: &mut BTreeMap<String, Element>)
                         if !have_ref_id {
                             panic!("not find ref_id on url {}", ref_id);
                         }
-                        let mut f = File::open(&path).expect(&format!(
-                            "[rbatis] can't find file={}",
-                            url.host_str().unwrap_or_default()
+                        let mut f = File::open(&file_path).expect(&format!(
+                            "[rbatis-codegen] can't find file='{}',url='{}' ",
+                            file_path.to_str().unwrap_or_default(),
+                            url
                         ));
                         let mut html = String::new();
                         f.read_to_string(&mut html).expect("read fail");
@@ -123,7 +139,11 @@ fn include_replace(htmls: Vec<Element>, sql_map: &mut BTreeMap<String, Element>)
                             }
                         }
                         if not_find {
-                            panic!("not find ref_id={} on file={}", ref_id, path);
+                            panic!(
+                                "not find ref_id={} on file={}",
+                                ref_id,
+                                file_path.to_str().unwrap_or_default()
+                            );
                         }
                     }
                     "current" => {
@@ -136,7 +156,7 @@ fn include_replace(htmls: Vec<Element>, sql_map: &mut BTreeMap<String, Element>)
                         let element = sql_map
                             .get(ref_id_pair.as_str())
                             .expect(&format!(
-                                "[rbatis] can not find element <include refid=\"{}\"> !",
+                                "[rbatis-codegen] can not find element <include refid=\"{}\"> !",
                                 ref_id
                             ))
                             .clone();
@@ -205,10 +225,14 @@ fn parse(
             "continue" => {
                 impl_continue(x, &mut body, ignore);
             }
+            "break" => {
+                impl_break(x, &mut body, ignore);
+            }
             "" => {
                 let mut string_data = remove_extra(&x.data);
                 let convert_list = find_convert_string(&string_data);
-                let mut replaces = quote! {};
+                let mut formats_value = quote! {};
+                let mut replace_num = 0;
                 for (k, v) in convert_list {
                     let method_impl = crate::codegen::func::impl_fn(
                         &body.to_string(),
@@ -224,19 +248,29 @@ fn parse(
                             args.push(rbs::to_value(#method_impl).unwrap_or_default());
                         };
                     } else {
-                        replaces = quote! {#replaces.replacen(#v, &#method_impl.as_sql(), 1)};
-                    }
-                }
-                if !replaces.is_empty() {
-                    replaces = quote! {
-                        #replaces.as_str()
+                        string_data = string_data.replacen(&v, &"{}", 1);
+                        if formats_value.to_string().trim().ends_with(",") == false {
+                            formats_value = quote!(#formats_value,);
+                        }
+                        formats_value = quote!(
+                            #formats_value
+                            &#method_impl.string()
+                        );
+                        replace_num += 1;
                     }
                 }
                 if !string_data.is_empty() {
-                    body = quote!(
-                     #body
-                      sql.push_str(#string_data #replaces);
-                    );
+                    if replace_num == 0 {
+                        body = quote!(
+                           #body
+                           sql.push_str(#string_data);
+                        );
+                    } else {
+                        body = quote!(
+                           #body
+                           sql.push_str(&format!(#string_data #formats_value));
+                        );
+                    }
                 }
             }
             "if" => {
@@ -263,13 +297,13 @@ fn parse(
                 let suffix = x.attrs.get("suffix").unwrap_or(&empty_string).to_string();
                 let prefix_overrides = x
                     .attrs
-                    .get("prefixOverrides")
-                    .unwrap_or(&empty_string)
+                    .get("start")
+                    .unwrap_or_else(|| x.attrs.get("prefixOverrides").unwrap_or(&empty_string))
                     .to_string();
                 let suffix_overrides = x
                     .attrs
-                    .get("suffixOverrides")
-                    .unwrap_or(&empty_string)
+                    .get("end")
+                    .unwrap_or_else(|| x.attrs.get("suffixOverrides").unwrap_or(&empty_string))
                     .to_string();
                 impl_trim(
                     &prefix,
@@ -295,8 +329,6 @@ fn parse(
                     .get("value")
                     .expect("<bind> element must be have value!")
                     .to_string();
-
-                let name_expr = parse_expr(&name);
                 let method_impl = crate::codegen::func::impl_fn(
                     &body.to_string(),
                     "",
@@ -304,12 +336,15 @@ fn parse(
                     false,
                     ignore,
                 );
+                let lit_str = LitStr::new(&name, Span::call_site());
                 body = quote! {
                     #body
                     //bind
-                    let #name_expr = rbs::to_value(#method_impl).unwrap_or_default();
+                    if arg[#lit_str] == rbs::Value::Null{
+                        arg.insert(rbs::Value::String(#lit_str.to_string()), rbs::Value::Null);
+                    }
+                    arg[#lit_str] = rbs::to_value(#method_impl).unwrap_or_default();
                 };
-                ignore.push(name);
             }
 
             "where" => {
@@ -327,9 +362,8 @@ fn parse(
                 );
                 body = quote! {
                     #body
-                    //check ends with where
-                    sql = sql.trim_end().to_string();
-                    sql = sql.trim_end_matches(" where").to_string();
+                    //check if body empty ends with `where`
+                    sql = sql.trim_end_matches(" where  ").to_string();
                 };
             }
 
@@ -362,7 +396,7 @@ fn parse(
                         impl_otherwise(child_body, &mut inner_body, methods, ignore);
                     }
                 }
-                let cup = x.child_string_cup();
+                let cup = x.child_string_cup() + 1000;
                 body = quote! {
                   #body
                   sql.push_str(&|| -> String {
@@ -394,10 +428,10 @@ fn parse(
                     .unwrap_or(&empty_string)
                     .to_string();
 
-                if item.is_empty() {
+                if item.is_empty() || item == "_" {
                     item = def_item;
                 }
-                if findex.is_empty() {
+                if findex.is_empty() || findex == "_" {
                     findex = def_index;
                 }
                 let mut ignores = ignore.clone();
@@ -440,7 +474,7 @@ fn parse(
                 body = quote! {
                     #body
                     #open_impl
-                    for (#index_ident,#item_ident) in #method_impl {
+                    for (ref #index_ident,#item_ident) in #method_impl {
                         #impl_body
                         #split_code
                     }
@@ -453,20 +487,33 @@ fn parse(
             }
 
             "set" => {
-                impl_trim(
-                    " set ", " ", " |,", " |,", x, &mut body, arg, methods, ignore, fn_name,
-                );
+                let collection = x.attrs.get("collection");
+                let skip_null = x.attrs.get("skip_null");
+                let skips = x.attrs.get("skips");
+                if let Some(collection) = collection {
+                    let elements = make_sets(collection, skip_null, skips.unwrap_or(&"id".to_string()));
+                    let code = parse(&elements, methods, ignore, fn_name);
+                    body = quote! {
+                         #body
+                         #code
+                    };
+                } else {
+                    impl_trim(
+                        " set ", " ", " |,", " |,", x, &mut body, arg, methods, ignore, fn_name,
+                    );
+                }
             }
 
             "select" => {
                 let method_name = Ident::new(fn_name, Span::call_site());
                 let child_body = parse(&x.childs, methods, ignore, fn_name);
-                let cup = x.child_string_cup();
+                let cup = x.child_string_cup() + 1000;
+                let push_count = child_body.to_string().matches("args.push").count();
                 let select = quote! {
-                    pub fn #method_name (arg:&rbs::Value, _tag: char) -> (String,Vec<rbs::Value>) {
+                    pub fn #method_name (mut arg: rbs::Value, _tag: char) -> (String,Vec<rbs::Value>) {
                        use rbatis_codegen::ops::*;
                        let mut sql = String::with_capacity(#cup);
-                       let mut args = Vec::with_capacity(20);
+                       let mut args = Vec::with_capacity(#push_count);
                        #child_body
                        #fix_sql
                        return (sql,args);
@@ -480,12 +527,13 @@ fn parse(
             "update" => {
                 let method_name = Ident::new(fn_name, Span::call_site());
                 let child_body = parse(&x.childs, methods, ignore, fn_name);
-                let cup = x.child_string_cup();
+                let cup = x.child_string_cup() + 1000;
+                let push_count = child_body.to_string().matches("args.push").count();
                 let select = quote! {
-                    pub fn #method_name (arg:&rbs::Value, _tag: char) -> (String,Vec<rbs::Value>) {
+                    pub fn #method_name (mut arg: rbs::Value, _tag: char) -> (String,Vec<rbs::Value>) {
                        use rbatis_codegen::ops::*;
                        let mut sql = String::with_capacity(#cup);
-                       let mut args = Vec::with_capacity(20);
+                       let mut args = Vec::with_capacity(#push_count);
                        #child_body
                        #fix_sql
                        return (sql,args);
@@ -499,12 +547,13 @@ fn parse(
             "insert" => {
                 let method_name = Ident::new(fn_name, Span::call_site());
                 let child_body = parse(&x.childs, methods, ignore, fn_name);
-                let cup = x.child_string_cup();
+                let cup = x.child_string_cup() + 1000;
+                let push_count = child_body.to_string().matches("args.push").count();
                 let select = quote! {
-                    pub fn #method_name (arg:&rbs::Value, _tag: char) -> (String,Vec<rbs::Value>) {
+                    pub fn #method_name (mut arg: rbs::Value, _tag: char) -> (String,Vec<rbs::Value>) {
                        use rbatis_codegen::ops::*;
                        let mut sql = String::with_capacity(#cup);
-                       let mut args = Vec::with_capacity(20);
+                       let mut args = Vec::with_capacity(#push_count);
                        #child_body
                        #fix_sql
                        return (sql,args);
@@ -518,12 +567,13 @@ fn parse(
             "delete" => {
                 let method_name = Ident::new(fn_name, Span::call_site());
                 let child_body = parse(&x.childs, methods, ignore, fn_name);
-                let cup = x.child_string_cup();
+                let cup = x.child_string_cup() + 1000;
+                let push_count = child_body.to_string().matches("args.push").count();
                 let select = quote! {
-                    pub fn #method_name (arg:&rbs::Value, _tag: char) -> (String,Vec<rbs::Value>) {
+                    pub fn #method_name (mut arg: rbs::Value, _tag: char) -> (String,Vec<rbs::Value>) {
                        use rbatis_codegen::ops::*;
                        let mut sql = String::with_capacity(#cup);
-                       let mut args = Vec::with_capacity(20);
+                       let mut args = Vec::with_capacity(#push_count);
                        #child_body
                        #fix_sql
                        return (sql,args);
@@ -538,7 +588,104 @@ fn parse(
         }
     }
 
-    return body.into();
+    body.into()
+}
+
+/// make <set>
+fn make_sets(collection: &str, skip_null: Option<&String>, skips: &str) -> Vec<Element> {
+    let mut is_skip_null = true;
+    if let Some(skip_null_value) = skip_null {
+        if skip_null_value.eq("false") {
+            is_skip_null = false;
+        }
+    }
+    let skip_strs: Vec<&str> = skips.split(',').collect();
+    let mut skip_element = vec![];
+    for x in skip_strs {
+        let element = Element {
+            tag: "if".to_string(),
+            data: "".to_string(),
+            attrs: {
+                let mut attr = HashMap::new();
+                attr.insert("test".to_string(), format!("k == '{}'", x.to_string()));
+                attr
+            },
+            childs: vec![Element {
+                tag: "continue".to_string(),
+                data: "".to_string(),
+                attrs: Default::default(),
+                childs: vec![],
+            }],
+        };
+        skip_element.push(element);
+    }
+    let mut for_each_body = vec![];
+    for x in skip_element {
+        for_each_body.push(x);
+    }
+    if is_skip_null {
+        for_each_body.push(Element {
+            tag: "if".to_string(),
+            data: "".to_string(),
+            attrs: {
+                let mut attr = HashMap::new();
+                attr.insert("test".to_string(), "v == null".to_string());
+                attr
+            },
+            childs: vec![
+                Element {
+                    tag: "continue".to_string(),
+                    data: "".to_string(),
+                    attrs: Default::default(),
+                    childs: vec![],
+                },
+            ],
+        });
+    }
+    for_each_body.push(Element {
+        tag: "".to_string(),
+        data: "${k}=#{v},".to_string(),
+        attrs: Default::default(),
+        childs: vec![],
+    });
+    let mut elements = vec![];
+    elements.push(Element {
+        tag: "trim".to_string(),
+        data: "".to_string(),
+        attrs: {
+            let mut attr = HashMap::new();
+            attr.insert("prefix".to_string(), " set ".to_string());
+            attr.insert("suffix".to_string(), " ".to_string());
+            attr.insert("start".to_string(), " ".to_string());
+            attr.insert("end".to_string(), " ".to_string());
+            attr
+        },
+        childs: vec![Element {
+            tag: "trim".to_string(),
+            data: "".to_string(),
+            attrs: {
+                let mut attr = HashMap::new();
+                attr.insert("prefix".to_string(), "".to_string());
+                attr.insert("suffix".to_string(), "".to_string());
+                attr.insert("start".to_string(), ",".to_string());
+                attr.insert("end".to_string(), ",".to_string());
+                attr
+            },
+            childs: vec![Element {
+                tag: "foreach".to_string(),
+                data: "".to_string(),
+                attrs: {
+                    let mut attr = HashMap::new();
+                    attr.insert("collection".to_string(), collection.to_string());
+                    attr.insert("index".to_string(), "k".to_string());
+                    attr.insert("item".to_string(), "v".to_string());
+                    attr
+                },
+                childs: for_each_body,
+            }],
+        }],
+    });
+    elements
 }
 
 fn remove_extra(txt: &str) -> String {
@@ -574,6 +721,13 @@ fn impl_continue(_x: &Element, body: &mut proc_macro2::TokenStream, _ignore: &mu
     *body = quote! {
          #body
          continue
+    };
+}
+
+fn impl_break(_x: &Element, body: &mut proc_macro2::TokenStream, _ignore: &mut Vec<String>) {
+    *body = quote! {
+         #body
+         break
     };
 }
 
@@ -616,8 +770,8 @@ fn impl_otherwise(
 fn impl_trim(
     prefix: &str,
     suffix: &str,
-    prefix_overrides: &str,
-    suffix_overrides: &str,
+    start: &str,
+    end: &str,
     x: &Element,
     body: &mut proc_macro2::TokenStream,
     _arg: &Vec<Element>,
@@ -626,22 +780,22 @@ fn impl_trim(
     fn_name: &str,
 ) {
     let trim_body = parse(&x.childs, methods, ignore, fn_name);
-    let prefixs: Vec<&str> = prefix_overrides.split("|").collect();
-    let suffixs: Vec<&str> = suffix_overrides.split("|").collect();
-    let have_trim = prefixs.len() != 0 && suffixs.len() != 0;
+    let prefixes: Vec<&str> = start.split("|").collect();
+    let suffixes: Vec<&str> = end.split("|").collect();
+    let have_trim = prefixes.len() != 0 && suffixes.len() != 0;
     let cup = x.child_string_cup();
     let mut trims = quote! {
          let mut sql= String::with_capacity(#cup);
          #trim_body
          sql=sql
     };
-    for x in prefixs {
+    for x in prefixes {
         trims = quote! {
             #trims
             .trim_start_matches(#x)
         }
     }
-    for x in suffixs {
+    for x in suffixes {
         trims = quote! {
             #trims
             .trim_end_matches(#x)
@@ -667,17 +821,15 @@ fn impl_trim(
     }
 }
 
-pub fn impl_fn_html(m: &ItemFn, args: &AttributeArgs) -> TokenStream {
+pub fn impl_fn_html(m: &ItemFn, args: &ParseArgs) -> TokenStream {
     let fn_name = m.sig.ident.to_string();
-    let html_data = args.get(0).to_token_stream().to_string();
+    if args.sqls.len() == 0 {
+        panic!(
+            "[rbatis-codegen] #[html_sql()] must have html_data, for example: {}",
+            stringify!(#[html_sql(r#"<select id="select_by_condition">`select * from biz_activity</select>"#)])
+        );
+    }
+    let html_data = args.sqls[0].to_token_stream().to_string();
     let t = parse_html(&html_data, &fn_name, &mut vec![]);
     return t.into();
-}
-
-/// parse to expr
-fn parse_expr(lit_str: &str) -> Expr {
-    let s = syn::parse::<syn::LitStr>(lit_str.to_token_stream().into())
-        .expect(&format!("parse::<syn::LitStr> fail: {}", lit_str));
-    return syn::parse_str::<Expr>(&s.value())
-        .expect(&format!("parse_str::<Expr> fail: {}", lit_str));
 }

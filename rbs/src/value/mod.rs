@@ -5,20 +5,18 @@
 //! ```
 //! ```
 use crate::value::map::ValueMap;
-use std::borrow::Cow;
 use std::fmt::{self, Debug, Display};
-use std::iter::FromIterator;
+use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 
-pub mod ext;
 pub mod map;
 
 /// Represents any valid MessagePack value.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
-    /// Nil represents nil.
+    /// null
     Null,
-    /// Bool represents true or false.
+    /// true or false
     Bool(bool),
     /// Int32
     I32(i32),
@@ -28,19 +26,19 @@ pub enum Value {
     U32(u32),
     /// Uint64
     U64(u64),
-    /// A 32-bit floating point number.
+    /// A 32-bit float number.
     F32(f32),
-    /// A 64-bit floating point number.
+    /// A 64-bit float number.
     F64(f64),
-    /// String extending Raw type represents a UTF-8 string.
+    /// String
     String(String),
-    /// Binary extending Raw type represents a byte array.
+    /// Binary/Bytes.
     Binary(Vec<u8>),
-    /// Array represents a sequence of objects.
+    /// Array/Vec.
     Array(Vec<Self>),
-    /// Map represents key-value pairs of objects.
+    /// Map<Key,Value>.
     Map(ValueMap),
-    /// Extended implements Extension interface
+    /// Ext(Reflection Type Name,Value)
     Ext(&'static str, Box<Self>),
 }
 
@@ -93,6 +91,17 @@ impl Value {
     #[inline]
     pub fn is_i64(&self) -> bool {
         if let Value::I64(_) = *self {
+            true
+        } else {
+            false
+        }
+    }
+
+
+    /// Returns true if the `Value` is convertible to an i32. Returns false otherwise.
+    #[inline]
+    pub fn is_i32(&self) -> bool {
+        if let Value::I32(_) = *self {
             true
         } else {
             false
@@ -318,6 +327,15 @@ impl Value {
     }
 
     #[inline]
+    pub fn as_string(&self) -> Option<String> {
+        match self {
+            Value::String(v) => Some(v.to_string()),
+            Value::Ext(_, ext) => ext.as_string(),
+            _ => None,
+        }
+    }
+
+    #[inline]
     pub fn into_string(self) -> Option<String> {
         match self {
             Value::String(v) => Some(v),
@@ -332,7 +350,17 @@ impl Value {
         match self {
             Value::Binary(v) => Some(v),
             Value::Ext(_, ext) => ext.into_bytes(),
-            _ => None,
+            Value::Null => Some(vec![]),
+            Value::Bool(v) => Some(v.to_string().into_bytes()),
+            Value::I32(v) => Some(v.to_string().into_bytes()),
+            Value::I64(v) => Some(v.to_string().into_bytes()),
+            Value::U32(v) => Some(v.to_string().into_bytes()),
+            Value::U64(v) => Some(v.to_string().into_bytes()),
+            Value::F32(v) => Some(v.to_string().into_bytes()),
+            Value::F64(v) => Some(v.to_string().into_bytes()),
+            Value::String(v) => Some(v.into_bytes()),
+            Value::Array(_) => Some(self.to_string().into_bytes()),
+            Value::Map(_) => Some(self.to_string().into_bytes()),
         }
     }
 
@@ -406,6 +434,28 @@ impl Value {
     pub fn as_ext(&self) -> Option<(&str, &Box<Value>)> {
         if let Value::Ext(ref ty, ref buf) = *self {
             Some((ty, buf))
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    pub fn into_map(self) -> Option<ValueMap> {
+        if let Value::Map(map) = self {
+            Some(map)
+        } else if let Value::Ext(_, map) = self {
+            map.into_map()
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    pub fn into_array(self) -> Option<Vec<Value>> {
+        if let Value::Array(array) = self {
+            Some(array)
+        } else if let Value::Ext(_, ext) = self {
+            ext.into_array()
         } else {
             None
         }
@@ -517,13 +567,6 @@ impl<'a> From<&'a str> for Value {
     }
 }
 
-impl<'a> From<Cow<'a, str>> for Value {
-    #[inline]
-    fn from(v: Cow<'a, str>) -> Self {
-        Value::String(v.to_string())
-    }
-}
-
 impl From<Vec<u8>> for Value {
     #[inline]
     fn from(v: Vec<u8>) -> Self {
@@ -538,24 +581,10 @@ impl<'a> From<&'a [u8]> for Value {
     }
 }
 
-impl<'a> From<Cow<'a, [u8]>> for Value {
-    #[inline]
-    fn from(v: Cow<'a, [u8]>) -> Self {
-        Value::Binary(v.into_owned())
-    }
-}
-
 impl From<Vec<Value>> for Value {
     #[inline]
     fn from(v: Vec<Value>) -> Self {
         Value::Array(v)
-    }
-}
-
-impl From<Vec<(Value, Value)>> for Value {
-    #[inline]
-    fn from(v: Vec<(Value, Value)>) -> Self {
-        Value::Map(ValueMap(v))
     }
 }
 
@@ -592,7 +621,7 @@ impl<V> FromIterator<V> for Value
 where
     V: Into<Value>,
 {
-    fn from_iter<I: IntoIterator<Item = V>>(iter: I) -> Self {
+    fn from_iter<I: IntoIterator<Item=V>>(iter: I) -> Self {
         let v: Vec<Value> = iter.into_iter().map(|v| v.into()).collect();
         Value::Array(v)
     }
@@ -601,7 +630,7 @@ where
 impl Display for Value {
     #[cold]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-        match *self {
+        match self {
             Value::Null => f.write_str("null"),
             Value::Bool(val) => Display::fmt(&val, f),
             Value::I32(ref val) => Display::fmt(&val, f),
@@ -610,9 +639,9 @@ impl Display for Value {
             Value::U64(ref val) => Display::fmt(&val, f),
             Value::F32(val) => Display::fmt(&val, f),
             Value::F64(val) => Display::fmt(&val, f),
-            Value::String(_) => {
+            Value::String(val) => {
                 f.write_str("\"")?;
-                Display::fmt(&self.as_str().unwrap_or_default(), f)?;
+                Display::fmt(val, f)?;
                 f.write_str("\"")
             }
             Value::Binary(ref val) => Debug::fmt(val, f),
@@ -630,8 +659,8 @@ impl Display for Value {
                 Ok(())
             }
             Value::Map(ref vec) => Display::fmt(vec, f),
-            Value::Ext(ref ty, ref data) => {
-                write!(f, "{}({})", ty, data.deref())
+            Value::Ext(_, ref data) => {
+                write!(f, "{}", data.deref())
             }
         }
     }
@@ -645,7 +674,7 @@ impl Default for Value {
 
 impl IntoIterator for Value {
     type Item = (Value, Value);
-    type IntoIter = std::vec::IntoIter<(Value, Value)>;
+    type IntoIter = indexmap::map::IntoIter<Value, Value>;
 
     fn into_iter(self) -> Self::IntoIter {
         match self {
@@ -654,7 +683,7 @@ impl IntoIterator for Value {
                 let mut v = ValueMap::with_capacity(arr.len());
                 let mut idx = 0;
                 for x in arr {
-                    v.push((Value::U32(idx), x));
+                    v.insert(Value::U32(idx), x);
                     idx += 1;
                 }
                 v.into_iter()
@@ -669,15 +698,15 @@ impl IntoIterator for Value {
 }
 
 impl<'a> IntoIterator for &'a Value {
-    type Item = (Cow<'a, Value>, &'a Value);
-    type IntoIter = std::vec::IntoIter<(Cow<'a, Value>, &'a Value)>;
+    type Item = (Value, &'a Value);
+    type IntoIter = std::vec::IntoIter<(Value, &'a Value)>;
 
     fn into_iter(self) -> Self::IntoIter {
         match self {
             Value::Map(m) => {
                 let mut arr = Vec::with_capacity(m.len());
                 for (k, v) in m {
-                    arr.push((Cow::Borrowed(k), v));
+                    arr.push((k.to_owned(), v));
                 }
                 arr.into_iter()
             }
@@ -685,7 +714,7 @@ impl<'a> IntoIterator for &'a Value {
                 let mut v = Vec::with_capacity(arr.len());
                 let mut idx = 0;
                 for x in arr {
-                    v.push((Cow::Owned(Value::U32(idx)), x));
+                    v.push((Value::U32(idx), x));
                     idx += 1;
                 }
                 v.into_iter()
@@ -696,6 +725,15 @@ impl<'a> IntoIterator for &'a Value {
                 v.into_iter()
             }
         }
+    }
+}
+
+impl<'a, 'b> IntoIterator for &'a &'b Value {
+    type Item = (Value, &'b Value);
+    type IntoIter = std::vec::IntoIter<(Value, &'b Value)>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        (*self).into_iter()
     }
 }
 
@@ -761,23 +799,102 @@ impl From<&Value> for String {
 
 impl Eq for Value {}
 
+impl Hash for Value {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Value::Null => {
+                state.write_u8(0);
+            }
+            Value::Bool(b) => {
+                state.write_u8(1);
+                b.hash(state);
+            }
+            Value::I32(i) => {
+                state.write_u8(2);
+                i.hash(state);
+            }
+            Value::I64(i) => {
+                state.write_u8(3);
+                i.hash(state);
+            }
+            Value::U32(u) => {
+                state.write_u8(4);
+                u.hash(state);
+            }
+            Value::U64(u) => {
+                state.write_u8(5);
+                u.hash(state);
+            }
+            Value::F32(f) => {
+                state.write_u8(6);
+                f.to_bits().hash(state);
+            }
+            Value::F64(f) => {
+                state.write_u8(7);
+                f.to_bits().hash(state);
+            }
+            Value::String(s) => {
+                state.write_u8(8);
+                s.hash(state);
+            }
+            Value::Binary(b) => {
+                state.write_u8(9);
+                b.hash(state);
+            }
+            Value::Array(a) => {
+                state.write_u8(10);
+                for v in a {
+                    v.hash(state);
+                }
+            }
+            Value::Map(m) => {
+                state.write_u8(11);
+                for (k, v) in m {
+                    k.hash(state);
+                    v.hash(state);
+                }
+            }
+            Value::Ext(_, v) => {
+                state.write_u8(12);
+                v.hash(state);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use crate::Value;
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_display() {
+        let v = Value::U64(1);
+        println!("{}", v);
+        assert_eq!("1", v.to_string());
+    }
 
     #[test]
     fn test_iter() {
         let v = Value::Array(vec![Value::I32(1), Value::I32(2), Value::I32(3)]);
         for (k, v) in &v {
             if Value::I32(1).eq(v) {
-                assert_eq!(&Value::U32(0), k.as_ref());
+                assert_eq!(&Value::U32(0), &k);
             }
             if Value::I32(2).eq(v) {
-                assert_eq!(&Value::U32(1), k.as_ref());
+                assert_eq!(&Value::U32(1), &k);
             }
             if Value::I32(3).eq(v) {
-                assert_eq!(&Value::U32(2), k.as_ref());
+                assert_eq!(&Value::U32(2), &k);
             }
         }
+    }
+
+    #[test]
+    fn test_hashmap() {
+        let mut v = HashMap::new();
+        v.insert(Value::F32(1.1), Value::I32(1));
+        v.insert(Value::F32(1.2), Value::I32(2));
+        assert_eq!(v.get(&Value::F32(1.1)).unwrap(), &Value::I32(1));
     }
 }

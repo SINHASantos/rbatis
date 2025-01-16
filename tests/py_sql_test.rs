@@ -5,49 +5,50 @@
 #![allow(unused_assignments)]
 #![allow(unused_must_use)]
 #![allow(dead_code)]
-#![allow(private_in_public)]
 
 #[macro_use]
 extern crate rbatis;
 
 #[cfg(test)]
 mod test {
-    #![allow(private_in_public)]
-
-    use crossbeam::queue::SegQueue;
+    use dark_std::sync::SyncVec;
     use futures_core::future::BoxFuture;
-    use rbatis::executor::RBatisConnExecutor;
-    use rbatis::intercept::SqlIntercept;
-    use rbatis::sql::PageRequest;
-    use rbatis::{Error, Rbatis};
-    use rbdc::datetime::FastDateTime;
+    use rbatis::executor::{Executor, RBatisConnExecutor};
+    use rbatis::intercept::{Intercept, ResultType};
+    use rbatis::plugin::PageRequest;
+    use rbatis::{Error, RBatis};
+    use rbdc::datetime::DateTime;
     use rbdc::db::{ConnectOptions, Connection, Driver, ExecResult, MetaData, Row};
     use rbdc::rt::block_on;
     use rbs::{from_value, to_value, Value};
     use std::any::Any;
     use std::collections::HashMap;
+    use std::fmt::{Debug, Formatter};
     use std::sync::Arc;
 
+    #[derive(Debug)]
     pub struct MockIntercept {
-        pub sql_args: Arc<SegQueue<(String, Vec<Value>)>>,
+        pub sql_args: Arc<SyncVec<(String, Vec<Value>)>>,
     }
 
     impl MockIntercept {
-        fn new(inner: Arc<SegQueue<(String, Vec<Value>)>>) -> Self {
+        fn new(inner: Arc<SyncVec<(String, Vec<Value>)>>) -> Self {
             Self { sql_args: inner }
         }
     }
 
-    impl SqlIntercept for MockIntercept {
-        fn do_intercept(
+    #[async_trait]
+    impl Intercept for MockIntercept {
+        async fn before(
             &self,
-            rb: &Rbatis,
+            task_id: i64,
+            rb: &dyn Executor,
             sql: &mut String,
             args: &mut Vec<Value>,
-            is_prepared_sql: bool,
-        ) -> Result<(), Error> {
+            _result: ResultType<&mut Result<ExecResult, Error>, &mut Result<Vec<Value>, Error>>,
+        ) -> Result<Option<bool>, Error> {
             self.sql_args.push((sql.to_string(), args.clone()));
-            Ok(())
+            Ok(Some(true))
         }
     }
 
@@ -65,8 +66,8 @@ mod test {
 
         fn connect_opt<'a>(
             &'a self,
-            _opt: &'a dyn ConnectOptions,
-        ) -> BoxFuture<Result<Box<dyn Connection>, Error>> {
+            _option: &'a dyn ConnectOptions,
+        ) -> BoxFuture<'a, Result<Box<dyn Connection>, Error>> {
             Box::pin(async { Ok(Box::new(MockConnection {}) as Box<dyn Connection>) })
         }
 
@@ -177,10 +178,6 @@ mod test {
         fn set_uri(&mut self, _uri: &str) -> Result<(), Error> {
             Ok(())
         }
-
-        fn uppercase_self(&self) -> &(dyn Any + Send + Sync) {
-            self
-        }
     }
 
     #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -194,7 +191,7 @@ mod test {
         pub sort: Option<String>,
         pub status: Option<i32>,
         pub remark: Option<String>,
-        pub create_time: Option<rbdc::datetime::FastDateTime>,
+        pub create_time: Option<rbdc::datetime::DateTime>,
         pub version: Option<i64>,
         pub delete_flag: Option<i32>,
         //exec sql
@@ -204,18 +201,110 @@ mod test {
     #[test]
     fn test_query_decode() {
         let f = async move {
-            let mut rb = Rbatis::new();
+            let mut rb = RBatis::new();
             rb.init(MockDriver {}, "test").unwrap();
-            let queue = Arc::new(SegQueue::new());
-            rb.set_sql_intercepts(vec![Box::new(MockIntercept::new(queue.clone()))]);
+            let queue = Arc::new(SyncVec::new());
+            rb.set_intercepts(vec![Arc::new(MockIntercept::new(queue.clone()))]);
             #[py_sql("select ${id},${id},#{id},#{id} ")]
-            pub async fn test_same_id(rb: &mut Rbatis, id: &u64) -> Result<Value, Error> {
+            pub async fn test_same_id(rb: &RBatis, id: &u64) -> Result<Value, Error> {
                 impled!()
             }
             let r = test_same_id(&mut rb, &1).await.unwrap();
             let (sql, args) = queue.pop().unwrap();
             assert_eq!(sql, "select 1,1,?,?");
             assert_eq!(args, vec![Value::U64(1), Value::U64(1)]);
+        };
+        block_on(f);
+    }
+
+    #[test]
+    fn test_macro() {
+        let f = async move {
+            let mut rb = RBatis::new();
+            rb.init(MockDriver {}, "test").unwrap();
+            let queue = Arc::new(SyncVec::new());
+            rb.set_intercepts(vec![Arc::new(MockIntercept::new(queue.clone()))]);
+
+            pysql!(test_same_id(rb: &RBatis, id: &u64)  -> Result<Value, Error> => "select ${id},${id},#{id},#{id} ");
+
+            let r = test_same_id(&mut rb, &1).await.unwrap();
+            let (sql, args) = queue.pop().unwrap();
+            assert_eq!(sql, "select 1,1,?,?");
+            assert_eq!(args, vec![Value::U64(1), Value::U64(1)]);
+        };
+        block_on(f);
+    }
+
+    #[test]
+    fn test_macro_bench() {
+        pub trait QPS {
+            fn qps(&self, total: u64);
+            fn time(&self, total: u64);
+            fn cost(&self);
+        }
+
+        impl QPS for std::time::Instant {
+            fn qps(&self, total: u64) {
+                let time = self.elapsed();
+                println!(
+                    "QPS: {} QPS/s",
+                    (total as u128 * 1000000000 as u128 / time.as_nanos() as u128)
+                );
+            }
+
+            fn time(&self, total: u64) {
+                let time = self.elapsed();
+                println!(
+                    "Time: {:?} ,each:{} ns/op",
+                    &time,
+                    time.as_nanos() / (total as u128)
+                );
+            }
+
+            fn cost(&self) {
+                let time = self.elapsed();
+                println!("cost:{:?}", time);
+            }
+        }
+        let f = async move {
+            let mut rb = RBatis::new();
+            rb.init(MockDriver {}, "test").unwrap();
+            pysql!(test_bench(rb: &RBatis, tables: &[MockTable])  -> Result<Value, Error> =>
+                "`insert into ${table_name} `
+                     for idx,table in tables:
+                      if idx == 0:
+                         `(`
+                           for k,v in table:
+                              if k == 'id' && v == null:
+                                 continue:
+                              ${k},
+                         `) VALUES `
+                    ");
+            let r = test_bench(&mut rb, &vec![]).await.unwrap();
+
+            let mut t = MockTable {
+                id: Some("2".into()),
+                name: Some("2".into()),
+                pc_link: Some("2".into()),
+                h5_link: Some("2".into()),
+                pc_banner_img: None,
+                h5_banner_img: None,
+                sort: None,
+                status: Some(2),
+                remark: Some("2".into()),
+                create_time: Some(rbdc::datetime::DateTime::now()),
+                version: Some(1),
+                delete_flag: Some(1),
+                count: 0,
+            };
+
+            let total = 100000;
+            let now = std::time::Instant::now();
+            for _ in 0..total {
+                let r = test_bench(&mut rb, &vec![t.clone()]).await.unwrap();
+            }
+            now.time(total);
+            now.qps(total);
         };
         block_on(f);
     }

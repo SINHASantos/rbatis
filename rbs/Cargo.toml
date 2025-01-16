@@ -1,6 +1,6 @@
 [package]
 name = "rbs"
-version = "0.1.15"
+version = "4.5.25"
 edition = "2021"
 description = "Serialization framework for ORM"
 readme = "Readme.md"
@@ -11,18 +11,17 @@ keywords = ["database", "orm", "mysql", "postgres", "sqlite"]
 documentation = "https://rbatis.github.io/rbatis.io"
 repository = "https://github.com/rbatis/rbatis"
 homepage = "https://rbatis.github.io/rbatis.io"
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-[dependencies]
-num-traits = "0.2"
-rmp = "0.8"
-serde = {version="1.0",features=["derive"]}
-serde_bytes = "0.11"
-quickcheck = "1.0"
-byteorder = "1.4"
-serde_derive = "1.0"
+
 
 [features]
+default = []
+#debug_mode will can see MapDeserializer key
+debug_mode = []
 
-[badges.maintenance]
-status = "passively-maintained"
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+indexmap = "2.5"
+
+
 

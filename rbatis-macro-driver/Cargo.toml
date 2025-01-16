@@ -1,6 +1,6 @@
 [package]
 name = "rbatis-macro-driver"
-version = "4.0.17"
+version = "4.5.13"
 edition = "2021"
 description = "The Rust SQL Toolkit and ORM Library. An async, pure Rust SQL crate featuring compile-time Dynamic SQL"
 readme = "Readme.md"
@@ -16,13 +16,14 @@ homepage = "https://rbatis.github.io/rbatis.io"
 
 [features]
 default = ["rbatis-codegen"]
-debug_mode = ["rust-format"]
+debug_mode = ["rbatis-codegen"]
+# control println gen function
+println_gen = ["rust-format", "rbatis-codegen"]
 [lib]
 proc-macro = true
 [dependencies]
 proc-macro2 = "1.0"
 quote = "1.0"
-syn = { version = "1.0", features = ["full"] }
-html_parser = "0.6.2"
-rbatis-codegen = { version = "4.0", path = "../rbatis-codegen", optional = true }
-rust-format = { version = "0.3.4", optional = true}
+syn = { version = "2.0", features = ["full"] }
+rbatis-codegen = { version = "4.5", path = "../rbatis-codegen", optional = true }
+rust-format = { version = "0.3.4", optional = true }

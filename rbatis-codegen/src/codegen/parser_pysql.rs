@@ -1,6 +1,7 @@
 use crate::codegen::parser_html::parse_html;
 use crate::codegen::proc_macro::TokenStream;
 use crate::codegen::syntax_tree_pysql::bind_node::BindNode;
+use crate::codegen::syntax_tree_pysql::break_node::BreakNode;
 use crate::codegen::syntax_tree_pysql::choose_node::ChooseNode;
 use crate::codegen::syntax_tree_pysql::continue_node::ContinueNode;
 use crate::codegen::syntax_tree_pysql::error::Error;
@@ -13,22 +14,29 @@ use crate::codegen::syntax_tree_pysql::trim_node::TrimNode;
 use crate::codegen::syntax_tree_pysql::when_node::WhenNode;
 use crate::codegen::syntax_tree_pysql::where_node::WhereNode;
 use crate::codegen::syntax_tree_pysql::{DefaultName, Name, NodeType};
+use crate::codegen::ParseArgs;
 use quote::ToTokens;
 use std::collections::HashMap;
-use syn::{AttributeArgs, ItemFn};
+use syn::ItemFn;
 
 pub trait ParsePySql {
-    fn parse_pysql(arg: &str) -> Result<Vec<NodeType>, crate::codegen::syntax_tree_pysql::error::Error>;
+    fn parse_pysql(arg: &str) -> Result<Vec<NodeType>, Error>;
 }
 
-pub fn impl_fn_py(m: &ItemFn, args: &AttributeArgs) -> TokenStream {
+pub fn impl_fn_py(m: &ItemFn, args: &ParseArgs) -> TokenStream {
     let fn_name = m.sig.ident.to_string();
-    let mut data = args.get(0).to_token_stream().to_string();
+    let mut data = {
+        let mut s = String::new();
+        for x in &args.sqls {
+            s = s + &x.to_token_stream().to_string();
+        }
+        s
+    };
     if data.ne("\"\"") && data.starts_with("\"") && data.ends_with("\"") {
         data = data[1..data.len() - 1].to_string();
     }
     data = data.replace("\\n", "\n");
-    let nodes = NodeType::parse_pysql(&data).expect("[rbatis] parse py_sql fail!");
+    let nodes = NodeType::parse_pysql(&data).expect("[rbatis-codegen] parse py_sql fail!");
     let htmls = crate::codegen::syntax_tree_pysql::to_html(
         &nodes,
         data.starts_with("select") || data.starts_with(" select"),
@@ -38,7 +46,7 @@ pub fn impl_fn_py(m: &ItemFn, args: &AttributeArgs) -> TokenStream {
 }
 
 impl ParsePySql for NodeType {
-    //TODO maybe this use Rust parser crates？
+    //TODO maybe this use Rust parser crates?
     fn parse_pysql(arg: &str) -> Result<Vec<NodeType>, Error> {
         let line_space_map = Self::create_line_space_map(&arg);
         let mut main_node = vec![];
@@ -176,7 +184,7 @@ impl NodeType {
 
     ///Map<line,space>
     fn create_line_space_map(arg: &str) -> HashMap<i32, i32> {
-        let mut m = HashMap::new();
+        let mut m = HashMap::with_capacity(100);
         let lines = arg.lines();
         let mut line = -1;
         for x in lines {
@@ -202,13 +210,13 @@ impl NodeType {
             let for_tag = "for";
             if !trim_express.starts_with(for_tag) {
                 return Err(Error::from(
-                    "[rbatis] parser express fail:".to_string() + source_str,
+                    "[rbatis-codegen] parser express fail:".to_string() + source_str,
                 ));
             }
             let in_tag = " in ";
             if !trim_express.contains(in_tag) {
                 return Err(Error::from(
-                    "[rbatis] parser express fail:".to_string() + source_str,
+                    "[rbatis-codegen] parser express fail:".to_string() + source_str,
                 ));
             }
             let in_index = trim_express
@@ -220,7 +228,7 @@ impl NodeType {
             if item.contains(",") {
                 let splits: Vec<&str> = item.split(",").collect();
                 if splits.len() != 2 {
-                    panic!("[rbatis_codegen] for node must be 'for key,item in col:'");
+                    panic!("[rbatis-codegen_codegen] for node must be 'for key,item in col:'");
                 }
                 index = splits[0];
                 item = splits[1];
@@ -233,14 +241,57 @@ impl NodeType {
             }));
         } else if trim_express.starts_with(TrimNode::name()) {
             let trim_express = trim_express.trim().trim_start_matches("trim ").trim();
-            if trim_express.starts_with("'") && trim_express.ends_with("'") {
-                let express = trim_express[1..trim_express.len() - 1].trim();
+            if trim_express.starts_with("'") && trim_express.ends_with("'")
+                || trim_express.starts_with("`") && trim_express.ends_with("`")
+            {
+                let mut trim_express = trim_express;
+                if trim_express.starts_with("`") && trim_express.ends_with("`") {
+                    trim_express = trim_express.trim_start_matches("`").trim_end_matches("`");
+                } else if trim_express.starts_with("'") && trim_express.ends_with("'") {
+                    trim_express = trim_express.trim_start_matches("'").trim_end_matches("'");
+                }
                 return Ok(NodeType::NTrim(TrimNode {
                     childs,
-                    trim: express.to_string(),
+                    start: trim_express.to_string(),
+                    end: trim_express.to_string(),
+                }));
+            } else if trim_express.contains("=") || trim_express.contains(",") {
+                let express: Vec<&str> = trim_express.split(",").collect();
+                let mut prefix = "";
+                let mut suffix = "";
+                for mut expr in express {
+                    expr = expr.trim();
+                    if expr.starts_with("start") {
+                        prefix = expr
+                            .trim_start_matches("start")
+                            .trim()
+                            .trim_start_matches("=")
+                            .trim()
+                            .trim_start_matches("'")
+                            .trim_end_matches("'")
+                            .trim_start_matches("`")
+                            .trim_end_matches("`");
+                    } else if expr.starts_with("end") {
+                        suffix = expr
+                            .trim_start_matches("end")
+                            .trim()
+                            .trim_start_matches("=")
+                            .trim()
+                            .trim_start_matches("'")
+                            .trim_end_matches("'")
+                            .trim_start_matches("`")
+                            .trim_end_matches("`");
+                    } else {
+                        return Err(Error::from(format!("[rbatis-codegen] express trim node error, for example  trim 'value':  trim start='value': trim start='value',end='value':   express = {}", trim_express)));
+                    }
+                }
+                return Ok(NodeType::NTrim(TrimNode {
+                    childs,
+                    start: prefix.to_string(),
+                    end: suffix.to_string(),
                 }));
             } else {
-                return Err(Error::from(format!("[rbatis] express trim value must be string value, for example:  trim 'value',error express: {}", trim_express)));
+                return Err(Error::from(format!("[rbatis-codegen] express trim node error, for example  trim 'value':  trim start='value': trim start='value',end='value':   error express = {}", trim_express)));
             }
         } else if trim_express.starts_with(ChooseNode::name()) {
             let mut node = ChooseNode {
@@ -256,7 +307,7 @@ impl NodeType {
                         node.otherwise_node = Some(Box::new(x));
                     }
                     _ => {
-                        return Err(Error::from("[rbatis] parser node fail,choose node' child must be when and otherwise nodes!".to_string()));
+                        return Err(Error::from("[rbatis-codegen] parser node fail,choose node' child must be when and otherwise nodes!".to_string()));
                     }
                 }
             }
@@ -283,12 +334,12 @@ impl NodeType {
             let name_value: Vec<&str> = express.split("=").collect();
             if name_value.len() != 2 {
                 return Err(Error::from(
-                    "[rbatis] parser bind express fail:".to_string() + trim_express,
+                    "[rbatis-codegen] parser bind express fail:".to_string() + trim_express,
                 ));
             }
             return Ok(NodeType::NBind(BindNode {
-                name: name_value[0].to_owned(),
-                value: name_value[1].to_owned(),
+                name: name_value[0].to_owned().trim().to_string(),
+                value: name_value[1].to_owned().trim().to_string(),
             }));
         } else if trim_express.starts_with(SetNode::name()) {
             return Ok(NodeType::NSet(SetNode { childs }));
@@ -296,10 +347,12 @@ impl NodeType {
             return Ok(NodeType::NWhere(WhereNode { childs }));
         } else if trim_express.starts_with(ContinueNode::name()) {
             return Ok(NodeType::NContinue(ContinueNode {}));
+        } else if trim_express.starts_with(BreakNode::name()) {
+            return Ok(NodeType::NBreak(BreakNode {}));
         } else {
             // unkonw tag
             return Err(Error::from(
-                "[rbatis] unknow tag: ".to_string() + source_str,
+                "[rbatis-codegen] unknow tag: ".to_string() + source_str,
             ));
         }
     }

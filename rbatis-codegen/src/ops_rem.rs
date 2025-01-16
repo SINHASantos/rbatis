@@ -109,6 +109,27 @@ macro_rules! impl_numeric_rem {
                 }
             }
 
+            impl Rem<&$ty> for Value {
+                type Output = $return_ty;
+                fn op_rem(self, other: &$ty) -> Self::Output {
+                    $rem(&self, *other as _)
+                }
+            }
+
+            impl<'a> Rem<$ty> for &'a Value {
+                type Output = $return_ty;
+                fn op_rem(self, other: $ty) -> Self::Output {
+                    $rem(self, other as _)
+                }
+            }
+
+            impl<'a> Rem<&$ty> for &'a Value {
+                type Output = $return_ty;
+                fn op_rem(self, other: &$ty) -> Self::Output {
+                    $rem(self, *other as _)
+                }
+            }
+
             impl Rem<Value> for $ty {
                 type Output = $return_ty;
                 fn op_rem(self, other: Value) -> Self::Output {
@@ -123,17 +144,24 @@ macro_rules! impl_numeric_rem {
                 }
             }
 
-           impl Rem<&&Value> for $ty {
+            impl Rem<Value> for &$ty {
                 type Output = $return_ty;
-                fn op_rem(self, other: &&Value) -> Self::Output {
-                    $rem_value(*other, self as _)
+                fn op_rem(self, other: Value) -> Self::Output {
+                    $rem_value(&other, *self as _)
                 }
             }
 
-            impl<'a> Rem<$ty> for &'a Value {
+            impl Rem<&Value> for &$ty {
                 type Output = $return_ty;
-                fn op_rem(self, other: $ty) -> Self::Output {
-                    $rem(self, other as _)
+                fn op_rem(self, other: &Value) -> Self::Output {
+                    $rem_value(other, *self as _)
+                }
+            }
+            // for unary
+            impl Rem<&&Value> for $ty {
+                type Output = $return_ty;
+                fn op_rem(self, other: &&Value) -> Self::Output {
+                    $rem_value(other, self as _)
                 }
             }
         )*)*
@@ -142,40 +170,40 @@ macro_rules! impl_numeric_rem {
 
 impl_numeric_rem! {
     op_rem_u64,op_rem_u64_value[u8 u16 u32 u64] -> u64
-    op_rem_i64,op_rem_i64_value[i8 i16 i32 i64 isize] -> i64
+    op_rem_i64,op_rem_i64_value[i8 i16 i32 i64 isize usize] -> i64
     op_rem_f64,op_rem_f64_value[f32 f64] -> f64
 }
 
-macro_rules! rem_self {
+macro_rules! self_rem {
     ([$($ty:ty)*]) => {
         $(
 impl Rem<$ty> for $ty{
-         type Output = $ty;
+      type Output = $ty;
       fn op_rem(self, rhs: $ty) -> Self::Output {
         self % rhs
       }
-    }
+}
 impl Rem<&$ty> for $ty{
-         type Output = $ty;
+      type Output = $ty;
       fn op_rem(self, rhs: &$ty) -> Self::Output {
         self % *rhs
       }
-    }
+}
 impl Rem<$ty> for &$ty{
-         type Output = $ty;
+      type Output = $ty;
       fn op_rem(self, rhs: $ty) -> Self::Output {
         *self % rhs
       }
-    }
+}
 impl Rem<&$ty> for &$ty{
-         type Output = $ty;
+      type Output = $ty;
       fn op_rem(self, rhs: &$ty) -> Self::Output {
         *self % *rhs
       }
-    }
+}
         )*
     };
 }
-rem_self!([u8 u16 u32 u64]);
-rem_self!([i8 i16 i32 i64 isize]);
-rem_self!([f32 f64]);
+self_rem!([u8 u16 u32 u64]);
+self_rem!([i8 i16 i32 i64 isize usize]);
+self_rem!([f32 f64]);

@@ -66,10 +66,17 @@ macro_rules! impl_numeric_div {
                 }
             }
 
-            impl Div<&&$ty> for Value {
+            impl<'a> Div<$ty> for &'a Value {
                 type Output = $return_ty;
-                fn op_div(self, other: &&$ty) -> Self::Output {
-                    $div(&self, **other as _)
+                fn op_div(self, other: $ty) -> Self::Output {
+                    $div(self, other as _)
+                }
+            }
+
+            impl<'a> Div<&$ty> for &'a Value {
+                type Output = $return_ty;
+                fn op_div(self, other: &$ty) -> Self::Output {
+                    $div(self, *other as _)
                 }
             }
 
@@ -87,30 +94,25 @@ macro_rules! impl_numeric_div {
                 }
             }
 
+            impl Div<Value> for &$ty {
+                type Output = $return_ty;
+                fn op_div(self, other: Value) -> Self::Output {
+                    $div_value(&other, *self as _)
+                }
+            }
+
+            impl Div<&Value> for &$ty {
+                type Output = $return_ty;
+                fn op_div(self, other: &Value) -> Self::Output {
+                    $div_value(other, *self as _)
+                }
+            }
+
+            // for unary
             impl Div<&&Value> for $ty {
                 type Output = $return_ty;
                 fn op_div(self, other: &&Value) -> Self::Output {
-                    $div_value(*other, self as _)
-                }
-            }
-
-            impl<'a> Div<$ty> for &'a Value {
-                type Output = $return_ty;
-                fn op_div(self, other: $ty) -> Self::Output {
-                    $div(self, other as _)
-                }
-            }
-
-            impl<'a> Div<&$ty> for &'a Value {
-                type Output = $return_ty;
-                fn op_div(self, other: &$ty) -> Self::Output {
-                    $div(self, *other as _)
-                }
-            }
-            impl<'a> Div<&&$ty> for &'a Value {
-                type Output = $return_ty;
-                fn op_div(self, other: &&$ty) -> Self::Output {
-                    $div(self, **other as _)
+                    $div_value(other, self as _)
                 }
             }
         )*)*
@@ -119,7 +121,7 @@ macro_rules! impl_numeric_div {
 
 impl_numeric_div! {
     op_div_u64,op_div_u64_value[u8 u16 u32 u64] -> u64
-    op_div_i64,op_div_i64_value[i8 i16 i32 i64 isize] -> i64
+    op_div_i64,op_div_i64_value[i8 i16 i32 i64 isize usize] -> i64
     op_div_f64,op_div_f64_value[f32 f64] -> f64
 }
 
@@ -215,36 +217,43 @@ impl Div<&&Value> for &Value {
     }
 }
 
-macro_rules! div_self {
+impl Div<&&Value> for &&Value {
+    type Output = Value;
+    fn op_div(self, rhs: &&Value) -> Self::Output {
+        op_div_value((*self).to_owned(), (*rhs).to_owned())
+    }
+}
+
+macro_rules! self_div {
     ([$($ty:ty)*]) => {
         $(
 impl Div<$ty> for $ty{
-         type Output = $ty;
+      type Output = $ty;
       fn op_div(self, rhs: $ty) -> Self::Output {
         self / rhs
       }
-    }
+}
 impl Div<&$ty> for $ty{
-         type Output = $ty;
+      type Output = $ty;
       fn op_div(self, rhs: &$ty) -> Self::Output {
         self / *rhs
       }
-    }
+}
 impl Div<$ty> for &$ty{
-         type Output = $ty;
+      type Output = $ty;
       fn op_div(self, rhs: $ty) -> Self::Output {
         *self / rhs
       }
-    }
+}
 impl Div<&$ty> for &$ty{
-         type Output = $ty;
+      type Output = $ty;
       fn op_div(self, rhs: &$ty) -> Self::Output {
         *self / *rhs
       }
-    }
+}
         )*
     };
 }
-div_self!([u8 u16 u32 u64]);
-div_self!([i8 i16 i32 i64 isize]);
-div_self!([f32 f64]);
+self_div!([u8 u16 u32 u64]);
+self_div!([i8 i16 i32 i64 isize usize]);
+self_div!([f32 f64]);

@@ -37,6 +37,13 @@ impl Sub<&&Value> for Value {
     }
 }
 
+impl Sub<Value> for &Value {
+    type Output = Value;
+    fn op_sub(self, rhs: Value) -> Self::Output {
+        op_sub_value(self.to_owned(), rhs)
+    }
+}
+
 impl Sub<&Value> for &Value {
     type Output = Value;
     fn op_sub(self, rhs: &Value) -> Self::Output {
@@ -48,13 +55,6 @@ impl Sub<&&Value> for &Value {
     type Output = Value;
     fn op_sub(self, rhs: &&Value) -> Self::Output {
         op_sub_value(self.to_owned(), (*rhs).to_owned())
-    }
-}
-
-impl Sub<Value> for &Value {
-    type Output = Value;
-    fn op_sub(self, rhs: Value) -> Self::Output {
-        op_sub_value(self.to_owned(), rhs)
     }
 }
 
@@ -92,6 +92,27 @@ macro_rules! impl_numeric_sub {
                 }
             }
 
+            impl Sub<&$ty> for Value {
+                type Output = $return_ty;
+                fn op_sub(self, other: &$ty) -> Self::Output {
+                    $sub(&self, *other as _)
+                }
+            }
+
+            impl<'a> Sub<$ty> for &'a Value {
+                type Output = $return_ty;
+                fn op_sub(self, other: $ty) -> Self::Output {
+                    $sub(self, other as _)
+                }
+            }
+
+            impl<'a> Sub<&$ty> for &'a Value {
+                type Output = $return_ty;
+                fn op_sub(self, other: &$ty) -> Self::Output {
+                    $sub(self, *other as _)
+                }
+            }
+
             impl Sub<Value> for $ty {
                 type Output = $return_ty;
                 fn op_sub(self, other: Value) -> Self::Output {
@@ -105,17 +126,25 @@ macro_rules! impl_numeric_sub {
                     $sub_value(other, self as _)
                 }
             }
+
+            impl Sub<Value> for &$ty {
+                type Output = $return_ty;
+                fn op_sub(self, other: Value) -> Self::Output {
+                    $sub_value(&other, *self as _)
+                }
+            }
+
+            impl Sub<&Value> for &$ty {
+                type Output = $return_ty;
+                fn op_sub(self, other: &Value) -> Self::Output {
+                    $sub_value(other, *self as _)
+                }
+            }
+            // for unary
             impl Sub<&&Value> for $ty {
                 type Output = $return_ty;
                 fn op_sub(self, other: &&Value) -> Self::Output {
                     $sub_value(*other, self as _)
-                }
-            }
-
-            impl<'a> Sub<$ty> for &'a Value {
-                type Output = $return_ty;
-                fn op_sub(self, other: $ty) -> Self::Output {
-                    $sub(self, other as _)
                 }
             }
         )*)*
@@ -124,40 +153,54 @@ macro_rules! impl_numeric_sub {
 
 impl_numeric_sub! {
     op_sub_u64,op_sub_u64_value[u8 u16 u32 u64] -> u64
-    op_sub_i64,op_sub_i64_value[i8 i16 i32 i64 isize] -> i64
+    op_sub_i64,op_sub_i64_value[i8 i16 i32 i64 isize usize] -> i64
     op_sub_f64,op_sub_f64_value[f32 f64] -> f64
 }
 
-macro_rules! sub_self {
+macro_rules! self_sub {
     ([$($ty:ty)*]) => {
         $(
 impl Sub<$ty> for $ty{
-         type Output = $ty;
+      type Output = $ty;
       fn op_sub(self, rhs: $ty) -> Self::Output {
         self-rhs
       }
-    }
+}
 impl Sub<&$ty> for $ty{
-         type Output = $ty;
+      type Output = $ty;
       fn op_sub(self, rhs: &$ty) -> Self::Output {
         self-*rhs
       }
-    }
+}
 impl Sub<$ty> for &$ty{
-         type Output = $ty;
+      type Output = $ty;
       fn op_sub(self, rhs: $ty) -> Self::Output {
         *self-rhs
       }
-    }
+}
 impl Sub<&$ty> for &$ty{
-         type Output = $ty;
+      type Output = $ty;
       fn op_sub(self, rhs: &$ty) -> Self::Output {
         *self-*rhs
       }
-    }
+}
         )*
     };
 }
 
-sub_self!([i8 i16 i32 i64 isize]);
-sub_self!([f32 f64]);
+self_sub!([u8 u16 u32 u64]);
+self_sub!([i8 i16 i32 i64 isize usize]);
+self_sub!([f32 f64]);
+
+#[cfg(test)]
+mod test {
+    use crate::ops::Sub;
+    use rbs::Value;
+
+    #[test]
+    fn test_sub() {
+        let v = 0.op_sub(&&Value::I32(-1));
+        println!("{}", v);
+        assert_eq!(v, 1i64);
+    }
+}

@@ -23,24 +23,10 @@ macro_rules! impl_numeric_add {
                 }
             }
 
-            impl Add<Value> for $ty {
+            impl Add<&$ty> for Value {
                 type Output = $return_ty;
-                fn op_add(self, other: Value) -> Self::Output {
-                    $eq(&other, self as _)
-                }
-            }
-
-            impl Add<&Value> for $ty {
-                type Output = $return_ty;
-                fn op_add(self, other: &Value) -> Self::Output {
-                    $eq(other, self as _)
-                }
-            }
-
-            impl Add<&&Value> for $ty {
-                type Output = $return_ty;
-                fn op_add(self, other: &&Value) -> Self::Output {
-                    $eq(*other, self as _)
+                fn op_add(self, other: &$ty) -> Self::Output {
+                    $eq(&self, *other as _)
                 }
             }
 
@@ -57,13 +43,49 @@ macro_rules! impl_numeric_add {
                     $eq(self, *other as _)
                 }
             }
+
+            impl Add<Value> for $ty {
+                type Output = $return_ty;
+                fn op_add(self, other: Value) -> Self::Output {
+                    $eq(&other, self as _)
+                }
+            }
+
+            impl Add<&Value> for $ty {
+                type Output = $return_ty;
+                fn op_add(self, other: &Value) -> Self::Output {
+                    $eq(other, self as _)
+                }
+            }
+
+            impl Add<Value> for &$ty {
+                type Output = $return_ty;
+                fn op_add(self, other: Value) -> Self::Output {
+                    $eq(&other, *self as _)
+                }
+            }
+
+            impl Add<&Value> for &$ty {
+                type Output = $return_ty;
+                fn op_add(self, other: &Value) -> Self::Output {
+                    $eq(other, *self as _)
+                }
+            }
+
+            // for unary
+            impl Add<&&Value> for $ty {
+                type Output = $return_ty;
+                fn op_add(self, other: &&Value) -> Self::Output {
+                    $eq(other, self as _)
+                }
+            }
         )*)*
     }
 }
 
 impl_numeric_add! {
     op_add_u64[u8 u16 u32 u64] -> u64
-    op_add_i64[i8 i16 i32 i64 isize] -> i64
+    op_add_i64[i8 i16 i32 i64 isize usize] -> i64
     op_add_f64[f32 f64] -> f64
 }
 
@@ -128,14 +150,14 @@ impl Add<Value> for &Value {
 impl Add<Value> for &str {
     type Output = String;
     fn op_add(self, rhs: Value) -> Self::Output {
-        self.to_string() + rhs.str()
+        self.to_string() + &rhs.string()
     }
 }
 
 impl Add<&Value> for &str {
     type Output = String;
     fn op_add(self, rhs: &Value) -> Self::Output {
-        self.to_string() + rhs.str()
+        self.to_string() + rhs.clone().string().as_str()
     }
 }
 
@@ -184,14 +206,14 @@ impl Add<String> for &Value {
 impl Add<Value> for &String {
     type Output = String;
     fn op_add(self, rhs: Value) -> Self::Output {
-        self.to_string() + rhs.str()
+        self.to_string() + &rhs.string()
     }
 }
 
 impl Add<&Value> for &String {
     type Output = String;
     fn op_add(self, rhs: &Value) -> Self::Output {
-        self.to_string() + rhs.str()
+        self.to_string() + &rhs.clone().string()
     }
 }
 
@@ -212,39 +234,47 @@ impl Add<&String> for &Value {
 impl Add<Value> for String {
     type Output = String;
     fn op_add(self, rhs: Value) -> Self::Output {
-        self.to_string() + rhs.str()
+        self.to_string() + &rhs.string()
     }
 }
 
 impl Add<&Value> for String {
     type Output = String;
     fn op_add(self, rhs: &Value) -> Self::Output {
-        self.to_string() + rhs.str()
+        self.to_string() + &rhs.clone().string()
     }
 }
 
-macro_rules! add_self {
+impl Add<&&Value> for String {
+    type Output = String;
+
+    fn op_add(self, rhs: &&Value) -> Self::Output {
+        self + &rhs.string()
+    }
+}
+
+macro_rules! self_add {
     ([$($ty:ty)*]) => {
         $(
-impl Add<$ty> for $ty{
+    impl Add<$ty> for $ty{
          type Output = $ty;
       fn op_add(self, rhs: $ty) -> Self::Output {
         self+rhs
       }
     }
-impl Add<&$ty> for $ty{
+    impl Add<&$ty> for $ty{
          type Output = $ty;
       fn op_add(self, rhs: &$ty) -> Self::Output {
         self+*rhs
       }
     }
-impl Add<$ty> for &$ty{
+    impl Add<$ty> for &$ty{
          type Output = $ty;
       fn op_add(self, rhs: $ty) -> Self::Output {
         *self+rhs
       }
     }
-impl Add<&$ty> for &$ty{
+    impl Add<&$ty> for &$ty{
          type Output = $ty;
       fn op_add(self, rhs: &$ty) -> Self::Output {
         *self+*rhs
@@ -253,9 +283,9 @@ impl Add<&$ty> for &$ty{
         )*
     };
 }
-add_self!([u8 u16 u32 u64]);
-add_self!([i8 i16 i32 i64 isize]);
-add_self!([f32 f64]);
+self_add!([u8 u16 u32 u64]);
+self_add!([i8 i16 i32 i64 isize usize]);
+self_add!([f32 f64]);
 
 impl Add<String> for String {
     type Output = String;
@@ -302,5 +332,19 @@ impl Add<&&String> for &str {
 
     fn op_add(self, rhs: &&String) -> Self::Output {
         self.to_string() + rhs.as_str()
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::ops::Add;
+    use rbs::{to_value, Value};
+
+    #[test]
+    fn test_add() {
+        let i: i64 = 1;
+        let v = to_value!(1);
+        let r = Value::from(v.op_add(&i));
+        assert_eq!(r, Value::from(2));
     }
 }

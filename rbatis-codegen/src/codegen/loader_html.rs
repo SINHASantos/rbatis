@@ -46,7 +46,7 @@ pub fn as_element(args: &Vec<Node>) -> Vec<Element> {
         let mut el = Element {
             tag: "".to_string(),
             data: "".to_string(),
-            attrs: HashMap::new(),
+            attrs: HashMap::with_capacity(50),
             childs: vec![],
         };
         match x {
@@ -58,6 +58,9 @@ pub fn as_element(args: &Vec<Node>) -> Vec<Element> {
             }
             Node::Element(element) => {
                 el.tag = element.name.to_string();
+                if el.tag == "bk" {
+                    el.tag = "break".to_string();
+                }
                 if element.id.is_some() {
                     el.attrs.insert(
                         "id".to_string(),
@@ -83,7 +86,12 @@ pub fn as_element(args: &Vec<Node>) -> Vec<Element> {
 }
 
 pub fn load_html(html: &str) -> Result<Vec<Element>> {
-    let dom = Dom::parse(html)?;
+    let mut html = html.to_string();
+    html = html
+        .replace("<break>", "<bk>")
+        .replace("<break/>", "<bk/>")
+        .replace("</break>", "</bk>");
+    let dom = Dom::parse(&html)?;
     let els = as_element(&dom.children);
     return Ok(els);
 }

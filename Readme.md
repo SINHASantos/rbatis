@@ -1,84 +1,52 @@
-[WebSite](https://rbatis.github.io/rbatis.io) | [Showcase](https://github.com/rbatis/rbatis/network/dependents)
+[WebSite](https://rbatis.github.io/rbatis.io) | [Showcase](https://github.com/rbatis/rbatis/network/dependents) | [Example](https://github.com/rbatis/rbatis/tree/master/example)
 
 [![Build Status](https://github.com/rbatis/rbatis/workflows/ci/badge.svg)](https://github.com/zhuxiujia/rbatis/actions)
 [![doc.rs](https://docs.rs/rbatis/badge.svg)](https://docs.rs/rbatis/)
 [![](https://img.shields.io/crates/d/rbatis)](https://crates.io/crates/rbatis)
 [![unsafe forbidden](https://img.shields.io/badge/unsafe-forbidden-success.svg)](https://github.com/rust-secure-code/safety-dance/)
+[![codecov](https://codecov.io/gh/rbatis/rbatis/graph/badge.svg?token=VAVPXSHoff)](https://codecov.io/gh/rbatis/rbatis)
 [![GitHub release](https://img.shields.io/github/v/release/rbatis/rbatis)](https://github.com/rbatis/rbatis/releases)
 [![discussions](https://img.shields.io/github/discussions/rbatis/rbatis)](https://github.com/rbatis/rbatis/discussions)
 
-<img style="width: 200px;height: 200px;" width="200" height="200" src="logo.png" />
+<img style="width: 200px;height: 190px;" width="200" height="190" src="logo.png" />
 
-#### A async, pure Rust SQL Toolkit,compile-time Dynamic SQL,Compile Time ORM. 
+#### a compile-time code generation ORM that balances ease of writing with performance and robustness
 
 It is an ORM, a small compiler, a dynamic SQL languages
 
-* Non-invasive API design. You don't need to change the current code
-* Compatible with most mybatis3 syntax
-* No Runtimes, No Garbage Collection, High performance, Based on Future/Tokio
-* Zero cost [Dynamic SQL](dyn_sql.md), implemented using (proc-macro, compile-time, Cow(Reduce unnecessary cloning)) techniques, don't need ONGL engine (mybatis)
-* JDBC-like driver design, driver use cargo.toml dependency and ```Box<dyn Driver>``` separation
-* All database drivers supported ```#{arg}```, ```${arg}```, ```?``` placeholder (pg/mssql auto processing '?' to '$1' and '@P1')
-* Dynamic SQL (Write code freely in SQL), pagination, ```py_sql``` query lang and ```html_sql``` (Inspired Mybatis).
-* Dynamic configuration connection pool (Based on the deadpool)
-* Supports logging, customizable logging based on `log` crate
-* 100% Safe Rust with `#![forbid(unsafe_code)]` enabled
-* Support use Trait System Add ```py_sql/ html_sql``` functions ([see](https://github.com/rbatis/rbatis/blob/master/example/src/macro_proc_htmlsql_custom_func.rs))
-* [abs_admin project](https://github.com/rbatis/abs_admin)  an complete background user management system(Vue.js+rbatis+actix-web)
+* High-performance: Compile time [Dynamic SQL](dyn_sql.md),Based on Future/Tokio, Connection Pool
+* Reliability:  Rust Safe Code,precompile: `#{arg}`, Direct replacement:`${arg}`, unify `?` placeholders(support all driver)
+* Productivity: Powerful [Interceptor interface](https://rbatis.github.io/rbatis.io/#/v4/?id=plugin-intercept), [curd](https://rbatis.github.io/rbatis.io/#/v4/?id=tabledefine), [py_sql](https://rbatis.github.io/rbatis.io/#/v4/?id=pysql) ,  [html_sql](https://rbatis.github.io/rbatis.io/#/v4/?id=htmlsql),[Table synchronize plugin](https://rbatis.github.io/rbatis.io/#/v4/?id=plugin-table-sync),[abs_admin](https://github.com/rbatis/abs_admin),[rbdc-drivers](https://github.com/rbatis/rbatis#supported-database-driver)
+* maintainability: The RBDC driver supports custom drivers, custom connection pool,support third-party driver package
 
-Thanks to ```SQLX, deadpool, Tiberius, MyBatis, xorm``` and so on reference design or code implementation. Release of V4.0 is Inspired and supported by these frameworks.
+###### Thanks to ```SQLX, deadpool,mobc, Tiberius, MyBatis, xorm``` and so on reference design or code implementation. Release of V4 is Inspired and supported by these frameworks.**
+
+
 
 ### Performance
 
 * this bench test is MockTable,MockDriver,MockConnection to Assume that the network I/O time is 0
 * run code ```rbatis.query_decode::<Vec<i32>>("", vec![]).await;``` on benches bench_raw()
-* run code ```MockTable::insert(&mut rbatis.clone(),&t).await;``` on benches bench_insert()
-* run code ```MockTable::select_all(&mut rbatis.clone()).await.unwrap();``` on benches bench_select()
-
+* run code ```MockTable::insert(&rbatis,&t).await;``` on benches bench_insert()
+* run code ```MockTable::select_all(&rbatis).await.unwrap();``` on benches bench_select()
+* see bench [code](https://github.com/rbatis/rbatis/blob/master/benches/raw_performance.rs)
 ```
----- bench_raw stdout ----
-Time: 84.6463ms ,each:846 ns/op
-QPS: 1181286 QPS/s
+---- bench_raw stdout ----(windows/SingleThread)
+Time: 52.4187ms ,each:524 ns/op
+QPS: 1906435 QPS/s
 
----- bench_insert stdout ----(macos,cpu-M1Max)
-Time: 378.186333ms ,each:3781 ns/op
-QPS: 264418 QPS/s
-
----- bench_select stdout ----(macos,cpu-M1Max)
+---- bench_select stdout ----(macos-M1Cpu/SingleThread)
 Time: 112.927916ms ,each:1129 ns/op
 QPS: 885486 QPS/s
+
+---- bench_insert stdout ----(macos-M1Cpu/SingleThread)
+Time: 346.576666ms ,each:3465 ns/op
+QPS: 288531 QPS/s
 ```
 
-### Supported data structures
-
-| data structure                                                            | is supported |
-|---------------------------------------------------------------------------|--------------|
-| Option                                                                    | √            | 
-| Vec                                                                       | √            |  
-| HashMap                                                                   | √            |
-| i32,i64,f32,f64,bool,String...more rust type                              | √            |  
-| rbatis::rbdc::types::{Date,FastDateTime,Time,Timestamp,Decimal,Json}      | √            |
-| rbatis::plugin::page::{Page<T>, PageRequest}                              | √            |
-| rbs::Value*                                                               | √            |
-| serde_json::*                                                             | √            |
-| any serde type                                                            | √            |
-| driver type on package (rdbc-mysql/types,rbdc-pg/types,rbdc-sqlite/types) | √            |
-
-### Supported database driver
-
-| database(crates.io)                             | github_link                                                                    |
-|-------------------------------------------------|--------------------------------------------------------------------------------|
-| [Mysql](https://crates.io/crates/rbdc-mysql)    | [rbatis/rbdc-mysql](https://github.com/rbatis/rbatis/tree/master/rbdc-mysql)   |
-| [Postgres](https://crates.io/crates/rbdc-pg)    | [rbatis/rbdc-pg](https://github.com/rbatis/rbatis/tree/master/rbdc-pg)         |
-| [Sqlite](https://crates.io/crates/rbdc-sqlite)  | [rbatis/rbdc-sqlite](https://github.com/rbatis/rbatis/tree/master/rbdc-sqlite) |
-| [Mssql](https://crates.io/crates/rbdc-mssql)    | [rbatis/rbdc-mssql](https://github.com/rbatis/rbatis/tree/master/rbdc-mssql)   |
-| [MariaDB](https://crates.io/crates/rbdc-mysql)  | [rbatis/rbdc-mysql](https://github.com/rbatis/rbatis/tree/master/rbdc-mysql)   |
-| [TiDB](https://crates.io/crates/rbdc-mysql)     | [rbatis/rbdc-mysql](https://github.com/rbatis/rbatis/tree/master/rbdc-mysql)   |
-| [CockroachDB](https://crates.io/crates/rbdc-pg) | [rbatis/rbdc-pg](https://github.com/rbatis/rbatis/tree/master/rbdc-pg)         |
-| [Oracle](https://crates.io/crates/rbdc-oracle)  | [chenpengfan/rbdc-oracle](https://github.com/chenpengfan/rbdc-oracle)          |
-
-
 ### Supported OS/Platforms by [Workflows CI](https://github.com/rbatis/rbatis/actions)
+
+* Rust compiler version v1.75+ later
 
 | platform                | is supported |
 |-------------------------|--------------|
@@ -86,36 +54,115 @@ QPS: 885486 QPS/s
 | Apple/MacOS(laster)     | √            |  
 | Windows(latest)         | √            |
 
+
+### Supported data structures
+
+| data structure                                                           | is supported |
+|--------------------------------------------------------------------------|--------------|
+| `Option`                                                                 | √            | 
+| `Vec`                                                                    | √            |  
+| `HashMap`                                                                | √            |
+| `i32,i64,f32,f64,bool,String`...more rust base type                      | √            |  
+| `rbatis::rbdc::types::{Bytes,Date,DateTime,Time,Timestamp,Decimal,Json}` | √            |
+| `rbatis::plugin::page::{Page, PageRequest}`                              | √            |
+| `rbs::Value`                                                             | √            |
+| `serde_json::Value` ...more serde type                                   | √            |
+| `rdbc-mysql::types::*`                                                   | √            |
+| `rdbc-pg::types::*`                                                      | √            |
+| `rdbc-sqlite::types::*`                                                  | √            |
+| `rdbc-mssql::types::*`                                                   | √            |
+
+### Supported database driver
+
+| database(crates.io)                                 | github_link                                                                    |
+|-----------------------------------------------------|--------------------------------------------------------------------------------|
+| [Mysql](https://crates.io/crates/rbdc-mysql)        | [rbatis/rbdc-mysql](https://github.com/rbatis/rbdc/tree/master/rbdc-mysql)   |
+| [Postgres](https://crates.io/crates/rbdc-pg)        | [rbatis/rbdc-pg](https://github.com/rbatis/rbdc/tree/master/rbdc-pg)         |
+| [Sqlite](https://crates.io/crates/rbdc-sqlite)      | [rbatis/rbdc-sqlite](https://github.com/rbatis/rbdc/tree/master/rbdc-sqlite) |
+| [Mssql](https://crates.io/crates/rbdc-mssql)        | [rbatis/rbdc-mssql](https://github.com/rbatis/rbdc/tree/master/rbdc-mssql)   |
+| [MariaDB](https://crates.io/crates/rbdc-mysql)      | [rbatis/rbdc-mysql](https://github.com/rbatis/rbdc/tree/master/rbdc-mysql)   |
+| [TiDB](https://crates.io/crates/rbdc-mysql)         | [rbatis/rbdc-mysql](https://github.com/rbatis/rbdc/tree/master/rbdc-mysql)   |
+| [CockroachDB](https://crates.io/crates/rbdc-pg)     | [rbatis/rbdc-pg](https://github.com/rbatis/rbdc/tree/master/rbdc-pg)         |
+| [Oracle](https://crates.io/crates/rbdc-oracle)      | [chenpengfan/rbdc-oracle](https://github.com/chenpengfan/rbdc-oracle)          |
+| [TDengine](https://crates.io/crates/rbdc-tdengine)  | [tdcare/rbdc-tdengine](https://github.com/tdcare/rbdc-tdengine)                |
+
+
+> how to write my DataBase Driver for RBatis?
+* first. define your driver project ,add Cargo.toml deps
+```toml
+[features]
+default = ["tls-rustls"]
+tls-rustls=["rbdc/tls-rustls"]
+tls-native-tls=["rbdc/tls-native-tls"]
+[dependencies]
+rbs = { version = "4.5"}
+rbdc = { version = "4.5", default-features = false,  optional = true }
+fastdate = { version = "0.3" }
+tokio = { version = "1", features = ["full"] }
+```
+* then. you should impl `rbdc::db::{ConnectOptions, Connection, ExecResult, MetaData, Placeholder, Row}` trait
+* finish. your driver is finish (you just need call RB.init() methods). it's support RBatis Connection Pool/tls(native,rustls)
+```rust
+#[tokio::main]
+async fn main(){
+  let rb = rbatis::RBatis::new();
+  rb.init(YourDriver {}, "YourDriver://****").unwrap();
+}
+```
+
+### Supported Connection Pools
+
+| database(crates.io)                                         | github_link                                                                             |
+|-------------------------------------------------------------|-----------------------------------------------------------------------------------------|
+| [FastPool-default](https://crates.io/crates/rbdc-pool-fast) | [rbatis/fast_pool](https://github.com/rbatis/rbatis/tree/master/rbdc-pool-fast)         |
+| [Deadpool](https://crates.io/crates/rbdc-pool-deadpool)     | [Deadpool](https://github.com/rbatis/rbdc-pool-deadpool)                                |
+| [MobcPool](https://crates.io/crates/rbdc-pool-mobc)         | [MobcPool](https://github.com/rbatis/rbdc-pool-mobc)                                    |
+
 ### Supported Web Frameworks
 
-* any web Frameworks just like actix-web, axum, hyper*, rocket, tide, warp, salvo and more.
+* any web Frameworks just like ntex, actix-web, axum, hyper, rocket, tide, warp, salvo and more.
 
 ##### Quick example: QueryWrapper and common usages (see example/crud_test.rs for details)
 
-* Rust v1.63+ later
-
 * Cargo.toml
 
+#### default
 ```toml
+#rbatis deps
+rbs = { version = "4.5"}
+rbatis = { version = "4.5"}
+rbdc-sqlite = { version = "4.5" }
+#rbdc-mysql={version="4.5"}
+#rbdc-pg={version="4.5"}
+#rbdc-mssql={version="4.5"}
+
+#other deps
+serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 log = "0.4"
-fast_log = "1.5"
+fast_log = "1.6"
+```
+#### (option) 'native-tls'
+```toml
+rbs = { version = "4.5" }
+rbatis = { version = "4.5"}
+rbdc-sqlite = { version = "4.5", default-features = false, features = ["tls-native-tls"] }
+#rbdc-mysql={version="4.5", default-features = false, features = ["tls-native-tls"]}
+#rbdc-pg={version="4.5", default-features = false, features = ["tls-native-tls"]}
+#rbdc-mssql={version="4.5", default-features = false, features = ["tls-native-tls"]}
+
+#other deps
 serde = { version = "1", features = ["derive"] }
-rbs = { version = "0.1"}
-rbatis = { version = "4.0"}
-rbdc-sqlite = { version = "0.1" }
-#rbdc-mysql={version="0.1"}
-#rbdc-pg={version="0.1"}
-#rbdc-mssql={version="0.1"}
-#...and more driver
+tokio = { version = "1", features = ["full"] }
+log = "0.4"
+fast_log = "1.6"
 ```
 
+#### default use
 ```rust
 //#[macro_use] define in 'root crate' or 'mod.rs' or 'main.rs'
-#[macro_use]
-extern crate rbatis;
-extern crate rbdc;
-use rbatis::rbdc::datetime::FastDateTime;
+
+use rbatis::rbdc::datetime::DateTime;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BizActivity {
@@ -128,7 +175,7 @@ pub struct BizActivity {
     pub sort: Option<String>,
     pub status: Option<i32>,
     pub remark: Option<String>,
-    pub create_time: Option<FastDateTime>,
+    pub create_time: Option<DateTime>,
     pub version: Option<i64>,
     pub delete_flag: Option<i32>,
 }
@@ -145,7 +192,7 @@ async fn main() {
     /// enable log crate to show sql logs
     fast_log::init(fast_log::Config::new().console()).expect("rbatis init fail");
     /// initialize rbatis. also you can call rb.clone(). this is  an Arc point
-    let rb = Rbatis::new();
+    let rb = RBatis::new();
     /// connect to database  
     // sqlite 
     rb.init(SqliteDriver {}, "sqlite://target/sqlite.db").unwrap();
@@ -166,32 +213,32 @@ async fn main() {
         sort: None,
         status: Some(2),
         remark: Some("2".into()),
-        create_time: Some(FastDateTime::now()),
+        create_time: Some(DateTime::now()),
         version: Some(1),
         delete_flag: Some(1),
     };
-    let data = BizActivity::insert(&mut rb, &activity).await;
+    let data = BizActivity::insert(&rb, &activity).await;
     println!("insert = {:?}", data);
 
-    let data = BizActivity::select_all_by_id(&mut rb, "1", "1").await;
+    let data = BizActivity::select_all_by_id(&rb, "1", "1").await;
     println!("select_all_by_id = {:?}", data);
 
-    let data = BizActivity::select_by_id(&mut rb, "1".to_string()).await;
+    let data = BizActivity::select_by_id(&rb, "1".to_string()).await;
     println!("select_by_id = {:?}", data);
 
-    let data = BizActivity::update_by_column(&mut rb, &activity, "id").await;
+    let data = BizActivity::update_by_column(&rb, &activity, "id").await;
     println!("update_by_column = {:?}", data);
 
-    let data = BizActivity::update_by_name(&mut rb, &activity, "test").await;
+    let data = BizActivity::update_by_name(&rb, &activity, "test").await;
     println!("update_by_name = {:?}", data);
 
-    let data = BizActivity::delete_by_column(&mut rb, "id", &"2".into()).await;
+    let data = BizActivity::delete_by_column(&rb, "id", &"2".into()).await;
     println!("delete_by_column = {:?}", data);
 
-    let data = BizActivity::delete_by_name(&mut rb, "2").await;
+    let data = BizActivity::delete_by_name(&rb, "2").await;
     println!("delete_by_column = {:?}", data);
 
-    let data = BizActivity::select_page(&mut rb, &PageRequest::new(1, 10), "2").await;
+    let data = BizActivity::select_page(&rb, &PageRequest::new(1, 10), "2").await;
     println!("select_page = {:?}", data);
 }
 ///...more usage,see crud.rs
@@ -201,7 +248,7 @@ async fn main() {
 ```rust
 #[tokio::main]
 pub async fn main() {
-    use rbatis::Rbatis;
+    use rbatis::RBatis;
     use rbdc_sqlite::driver::SqliteDriver;
     #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
     pub struct BizActivity {
@@ -209,7 +256,7 @@ pub async fn main() {
         pub name: Option<String>,
     }
     fast_log::init(fast_log::Config::new().console()).expect("rbatis init fail");
-    let rb = Rbatis::new();
+    let rb = RBatis::new();
     rb.init(SqliteDriver {}, "sqlite://target/sqlite.db").unwrap();
     let table: Option<BizActivity> = rb
         .query_decode("select * from biz_activity limit ?", vec![rbs::to_value!(1)])
@@ -235,7 +282,7 @@ pub async fn main() {
     #[py_sql("select * from biz_activity where delete_flag = 0
                   if name != '':
                     `and name=#{name}`")]
-async fn py_sql_tx(rb: &Rbatis, tx_id: &String, name: &str) -> Vec<BizActivity> { impled!() }
+async fn py_sql_tx(rb: &RBatis, tx_id: &String, name: &str) -> Vec<BizActivity> { impled!() }
 ```
 
 * Added html_sql support, a form of organization similar to MyBatis, to facilitate migration of Java systems to Rust(
@@ -259,21 +306,21 @@ async fn py_sql_tx(rb: &Rbatis, tx_id: &String, name: &str) -> Vec<BizActivity> 
 ```rust
     ///select page must have  '?:&PageRequest' arg and return 'Page<?>'
 #[html_sql("example/example.html")]
-async fn select_by_condition(rb: &mut dyn Executor, page_req: &PageRequest, name: &str) -> Page<BizActivity> { impled!() }
+async fn select_by_condition(rb: &dyn Executor, page_req: &PageRequest, name: &str) -> Page<BizActivity> { impled!() }
 ```
 
 ```rust
 use once_cell::sync::Lazy;
 
-pub static RB: Lazy<Rbatis> = Lazy::new(|| Rbatis::new());
+pub static RB: Lazy<RBatis> = Lazy::new(|| RBatis::new());
 
 /// Macro generates execution logic based on method definition, similar to @select dynamic SQL of Java/Mybatis
-/// RB is the name referenced locally by Rbatis, for example DAO ::RB, com:: XXX ::RB... Can be
+/// RB is the name referenced locally by RBatis, for example DAO ::RB, com:: XXX ::RB... Can be
 /// The second parameter is the standard driver SQL. Note that the corresponding database parameter mysql is? , pg is $1...
 /// macro auto edit method to  'pub async fn select(name: &str) -> rbatis::core::Result<BizActivity> {}'
 ///
 #[sql("select * from biz_activity where id = ?")]
-pub async fn select(rb: &Rbatis, name: &str) -> BizActivity {}
+pub async fn select(rb: &RBatis, name: &str) -> BizActivity {}
 //or： pub async fn select(name: &str) -> rbatis::core::Result<BizActivity> {}
 
 #[tokio::test]
@@ -308,15 +355,20 @@ You are welcome to submit the merge, and make sure that any functionality you ad
 
 # Roadmap
 
-- [x] sqlite table sync plugin(auto create table/column)
-- [ ] connection pool add more dynamically configured parameters
-- [ ] More simplified syntax
+- [x] table sync plugin,auto create table/column (sqlite/mysql/mssql/postgres)
+- [x] customize connection pooling,connection pool add more dynamically configured parameters
+- [ ] V5 version
 
-# Contact/donation, or click on star [rbatis](https://github.com/rbatis/rbatis)
+# Ask AI For Help(AI帮助)
+
+<a href="https://chatglm.cn/main/gdetail/6604ffe818d17f1aaa8d9cf8">
+<img style="width: 200px;height: 290px;" width="200" height="290" src="ai.jpg" alt="" />
+</a>
+
 
 * [![discussions](https://img.shields.io/github/discussions/rbatis/rbatis)](https://github.com/rbatis/rbatis/discussions)
 
-# 联系方式/捐赠,或 [rbatis](https://github.com/rbatis/rbatis) 点star
+# 联系方式/捐赠,或 [rb](https://github.com/rbatis/rbatis) 点star
 
 > 捐赠
 

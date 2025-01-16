@@ -9,10 +9,10 @@ pub trait AsProxy {
     fn u32(&self) -> u32;
     fn u64(&self) -> u64;
     fn f64(&self) -> f64;
-    fn str(&self) -> &str;
-    fn string(self) -> String;
+    fn usize(&self) -> usize;
     fn bool(&self) -> bool;
-    fn as_sql(&self) -> String;
+
+    fn string(&self) -> String;
     fn as_binary(&self) -> Vec<u8>;
 }
 
@@ -37,32 +37,233 @@ impl AsProxy for Value {
         self.as_f64().unwrap_or_default()
     }
 
-    fn str(&self) -> &str {
-        self.as_str().unwrap_or_default()
-    }
-
-    fn string(self) -> String {
-        self.into_string().unwrap_or_default()
+    fn string(&self) -> String {
+        match self {
+            Value::String(v) => v.to_string(),
+            Value::Ext(_, ext) => ext.as_string().unwrap_or_default(),
+            _ => self.to_string(),
+        }
     }
 
     fn bool(&self) -> bool {
         self.as_bool().unwrap_or_default()
     }
 
-    fn as_sql(&self) -> String {
-        match self {
-            Value::String(s) => s.to_string(),
-            _ => self.to_string(),
-        }
-    }
-
     fn as_binary(&self) -> Vec<u8> {
         match self {
             Value::Binary(s) => s.to_owned(),
-            _ => vec![]
+            _ => vec![],
+        }
+    }
+
+    fn usize(&self) -> usize {
+        self.as_u64().unwrap_or_default() as usize
+    }
+}
+
+impl AsProxy for bool {
+    fn i32(&self) -> i32 {
+        if *self {
+            1
+        } else {
+            0
+        }
+    }
+
+    fn i64(&self) -> i64 {
+        if *self {
+            1
+        } else {
+            0
+        }
+    }
+
+    fn u32(&self) -> u32 {
+        if *self {
+            1
+        } else {
+            0
+        }
+    }
+
+    fn u64(&self) -> u64 {
+        if *self {
+            1
+        } else {
+            0
+        }
+    }
+
+    fn usize(&self) -> usize {
+        if *self {
+            1
+        } else {
+            0
+        }
+    }
+
+    fn f64(&self) -> f64 {
+        if *self {
+            1.0
+        } else {
+            0.0
+        }
+    }
+
+    fn bool(&self) -> bool {
+        *self
+    }
+
+    fn string(&self) -> String {
+        self.to_string()
+    }
+
+    fn as_binary(&self) -> Vec<u8> {
+        if *self {
+            vec![1u8]
+        } else {
+            vec![0u8]
         }
     }
 }
+
+impl AsProxy for String {
+    fn i32(&self) -> i32 {
+        self.parse().unwrap_or_default()
+    }
+
+    fn i64(&self) -> i64 {
+        self.parse().unwrap_or_default()
+    }
+
+    fn u32(&self) -> u32 {
+        self.parse().unwrap_or_default()
+    }
+
+    fn u64(&self) -> u64 {
+        self.parse().unwrap_or_default()
+    }
+
+    fn usize(&self) -> usize {
+        self.parse().unwrap_or_default()
+    }
+
+    fn f64(&self) -> f64 {
+        self.parse().unwrap_or_default()
+    }
+
+    fn bool(&self) -> bool {
+        self.parse().unwrap_or_default()
+    }
+
+    fn string(&self) -> String {
+        self.to_string()
+    }
+
+    fn as_binary(&self) -> Vec<u8> {
+        self.to_string().into_bytes()
+    }
+}
+
+impl AsProxy for str {
+    fn i32(&self) -> i32 {
+        self.parse().unwrap_or_default()
+    }
+
+    fn i64(&self) -> i64 {
+        self.parse().unwrap_or_default()
+    }
+
+    fn u32(&self) -> u32 {
+        self.parse().unwrap_or_default()
+    }
+
+    fn u64(&self) -> u64 {
+        self.parse().unwrap_or_default()
+    }
+
+    fn usize(&self) -> usize {
+        self.parse().unwrap_or_default()
+    }
+
+    fn f64(&self) -> f64 {
+        self.parse().unwrap_or_default()
+    }
+
+    fn bool(&self) -> bool {
+        self.parse().unwrap_or_default()
+    }
+
+    fn string(&self) -> String {
+        self.to_string()
+    }
+
+    fn as_binary(&self) -> Vec<u8> {
+        self.to_string().into_bytes()
+    }
+}
+
+macro_rules! as_number {
+    ($ty:ty,$bool_expr:expr) => {
+        impl AsProxy for $ty {
+            fn i32(&self) -> i32 {
+                *self as i32
+            }
+
+            fn i64(&self) -> i64 {
+                *self as i64
+            }
+
+            fn u32(&self) -> u32 {
+                *self as u32
+            }
+
+            fn u64(&self) -> u64 {
+                *self as u64
+            }
+
+            fn usize(&self) -> usize {
+                *self as usize
+            }
+
+            fn f64(&self) -> f64 {
+                *self as f64
+            }
+
+            fn string(&self) -> String {
+                self.to_string()
+            }
+
+            fn bool(&self) -> bool {
+                //*self==1
+                if *self == $bool_expr {
+                    true
+                } else {
+                    false
+                }
+            }
+
+            fn as_binary(&self) -> Vec<u8> {
+                self.to_string().into_bytes()
+            }
+        }
+    };
+}
+
+as_number!(i8, 1i8);
+as_number!(i16, 1i16);
+as_number!(i32, 1i32);
+as_number!(i64, 1i64);
+as_number!(isize, 1isize);
+
+as_number!(u8, 1u8);
+as_number!(u16, 1u16);
+as_number!(u32, 1u32);
+as_number!(u64, 1u64);
+as_number!(usize, 1usize);
+
+as_number!(f32, 1.0);
+as_number!(f64, 1.0);
 
 pub trait PartialEq<Rhs: ?Sized = Self> {
     /// This method tests for `self` and `other` values to be equal, and is used
@@ -357,6 +558,22 @@ pub trait OpsIndexMut<Idx: ?Sized>: OpsIndex<Idx> {
 pub trait From<T>: Sized {
     /// Performs the conversion.
     fn op_from(_: T) -> Self;
+}
+
+pub trait Neg {
+    /// The resulting type after applying the `-` operator.
+    type Output;
+
+    /// Performs the unary `-` operation.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let x: i32 = 12;
+    /// assert_eq!(-x, -12);
+    /// ```
+    #[must_use = "this returns the result of the operation, without modifying the original"]
+    fn neg(self) -> Self::Output;
 }
 
 #[cfg(test)]

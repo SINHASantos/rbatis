@@ -1,15 +1,14 @@
 #![feature(test)]
-#![feature(bench_black_box)]
 extern crate test;
 
-use rbs::{value_map, Value};
+use rbs::{to_value, Value};
 use test::Bencher;
 
 #[bench]
 fn bench_rbs_decode(b: &mut Bencher) {
-    let v: Value = 1.into();
+    let v: Value = to_value!(1);
     b.iter(|| {
-        rbs::from_value::<i32>(v.clone()).unwrap();
+        rbs::from_value_ref::<i32>(&v).unwrap();
     });
 }
 
@@ -17,35 +16,37 @@ fn bench_rbs_decode(b: &mut Bencher) {
 fn bench_rbs_decode_value(b: &mut Bencher) {
     let v: Value = 1.into();
     b.iter(|| {
-        rbs::from_value::<Value>(v.clone()).unwrap();
+        rbs::from_value_ref::<Value>(&v).unwrap();
     });
 }
 
 #[bench]
 fn bench_rbatis_decode(b: &mut Bencher) {
-    let array = Value::Array(vec![Value::Map(value_map! {
-        1 => 1,
-    })]);
+    let array = Value::Array(vec![to_value! {
+        1 : 1,
+    }]);
     b.iter(|| {
-        rbatis::decode::<i32>(array.clone()).unwrap();
+        rbatis::decode_ref::<i32>(&array).unwrap();
     });
 }
 
 #[bench]
 fn bench_rbatis_decode_map(b: &mut Bencher) {
-    let date = rbdc::types::datetime::FastDateTime::now();
-    let array = Value::Array(vec![Value::Map(value_map! {
-        1 => date,
-    })]);
+    let date = rbdc::types::datetime::DateTime::now();
+    let array = Value::Array(vec![to_value! {
+        1 : date,
+    }]);
     b.iter(|| {
-        rbatis::decode::<rbdc::types::datetime::FastDateTime>(array.clone()).unwrap();
+        rbatis::decode_ref::<rbdc::types::datetime::DateTime>(&array).unwrap();
     });
 }
 
 #[bench]
-fn bench_is_debug_mode(b: &mut Bencher) {
-    let rb = rbatis::Rbatis::new();
+fn bench_rbs_decode_inner(b: &mut Bencher) {
+    let m = Value::Array(vec![to_value! {
+        "aa": 0
+    }]);
     b.iter(|| {
-        rb.is_debug_mode();
+        rbatis::decode_ref::<i64>(&m).unwrap();
     });
 }

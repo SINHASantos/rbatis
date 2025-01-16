@@ -8,67 +8,92 @@ use crate::Error;
 /// support decode types:
 /// Value,BigDecimal, i8..i64,u8..u64,i64,bool,String
 /// or object used rbs::Value macro object
+pub fn decode_ref<T: ?Sized>(values: &Value) -> Result<T, Error>
+where
+    T: DeserializeOwned,
+{
+    // try to identify type
+    let is_array = rbs::from_value::<T>(Value::Array(vec![])).is_ok();
+    if is_array {
+        //decode array
+        Ok(rbs::from_value_ref(values)?)
+    } else {
+        match values {
+            Value::Array(datas) => Ok(try_decode_map(datas)?),
+            _ => Err(Error::from("decode an not array value")),
+        }
+    }
+}
+
 pub fn decode<T: ?Sized>(bs: Value) -> Result<T, Error>
 where
     T: DeserializeOwned,
 {
-    let type_name = std::any::type_name::<T>();
-    if is_debug_mode() {
-        log::debug!("    [rbatis] [debug_mode] {} => {}", type_name, bs);
-    }
-    let mut datas = vec![];
-    match bs {
-        Value::Array(arr) => {
-            datas = arr;
-        }
-        _ => {}
-    }
-    // try speculate type
-    let is_array = rbs::from_value::<T>(Value::Array(vec![])).is_ok();
-    if is_array {
-        //decode array
-        Ok(rbs::from_value(Value::Array(datas))?)
-    } else {
-        Ok(try_decode_map(type_name, &mut datas)?)
-    }
+    decode_ref(&bs)
 }
 
 //decode doc or one type
-pub fn try_decode_map<T>(type_name: &str, datas: &mut Vec<Value>) -> Result<T, Error>
+pub fn try_decode_map<T>(datas: &Vec<Value>) -> Result<T, Error>
 where
     T: DeserializeOwned,
 {
     //decode struct
     if datas.len() > 1 {
-        return Result::Err(Error::from(format!(
-            "[rbatis] rows.rows_affected > 1,but decode one type ({})!",
-            type_name
+        return Err(Error::from(format!(
+            "[rb] rows.rows_affected > 1,but decode one type ({})!",
+            std::any::type_name::<T>()
         )));
     }
     //single try decode
     if datas.is_empty() {
         return Ok(rbs::from_value::<T>(Value::Null)?);
     }
-    let m = datas.remove(0);
+    let m = datas.get(0).unwrap_or(&Value::Null);
     match &m {
         Value::Map(map) => {
             if map.len() == 1 {
-                if let Some((_, value)) = map.into_iter().next() {
-                    //try one
-                    if let Ok(v) = rbs::from_value::<T>(value.clone()) {
-                        return Ok(v);
+                //try one
+                let type_name = std::any::type_name::<T>();
+                if type_name == std::any::type_name::<i32>()
+                    || type_name == std::any::type_name::<i64>()
+                    || type_name == std::any::type_name::<f32>()
+                    || type_name == std::any::type_name::<f64>()
+                    || type_name == std::any::type_name::<u32>()
+                    || type_name == std::any::type_name::<u64>()
+                    || type_name == std::any::type_name::<String>()
+                    || type_name == std::any::type_name::<bool>()
+                    || type_name == std::any::type_name::<Option<i32>>()
+                    || type_name == std::any::type_name::<Option<i64>>()
+                    || type_name == std::any::type_name::<Option<f32>>()
+                    || type_name == std::any::type_name::<Option<f64>>()
+                    || type_name == std::any::type_name::<Option<u32>>()
+                    || type_name == std::any::type_name::<Option<u64>>()
+                    || type_name == std::any::type_name::<Option<String>>()
+                    || type_name == std::any::type_name::<Option<bool>>()
+                    || type_name.starts_with("rbdc::types::")
+                    || type_name.starts_with("core::option::Option<rbdc::types::")
+                {
+                    if let Some((_, value)) = map.into_iter().next(){
+                        return Ok(rbs::from_value_ref::<T>(value)?);
                     }
                 }
             }
         }
         _ => {}
     }
-    Ok(rbs::from_value::<T>(m)?)
+    Ok(rbs::from_value_ref::<T>(m)?)
 }
 
 pub fn is_debug_mode() -> bool {
     if cfg!(debug_assertions) {
-        true
+        #[cfg(feature = "debug_mode")]
+        {
+            true
+        }
+        #[cfg(not(feature = "debug_mode"))]
+        {
+            false
+        }
     } else {
         false
     }
@@ -78,7 +103,7 @@ pub fn is_debug_mode() -> bool {
 mod test {
     use crate::decode::decode;
     use rbs::value::map::ValueMap;
-    use rbs::{Value};
+    use rbs::Value;
     use std::collections::HashMap;
 
     #[test]

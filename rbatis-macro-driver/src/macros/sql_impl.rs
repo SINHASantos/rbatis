@@ -1,14 +1,14 @@
+use crate::ParseArgs;
 use proc_macro2::{Ident, Span};
 use quote::quote;
 use quote::ToTokens;
-use syn;
-use syn::{AttributeArgs, FnArg, ItemFn, Lit, NestedMeta, Pat};
+use syn::{FnArg, ItemFn, Pat};
 
 use crate::proc_macro::TokenStream;
-use crate::util::{find_fn_body, find_return_type, get_fn_args, is_query, is_rbatis_ref};
+use crate::util::{find_fn_body, find_return_type, get_fn_args, is_query, is_rb_ref};
 
 //impl sql macro
-pub(crate) fn impl_macro_sql(target_fn: &ItemFn, args: &AttributeArgs) -> TokenStream {
+pub(crate) fn impl_macro_sql(target_fn: &ItemFn, args: &ParseArgs) -> TokenStream {
     let return_ty = find_return_type(target_fn);
     let func_name_ident = target_fn.sig.ident.to_token_stream();
 
@@ -19,7 +19,7 @@ pub(crate) fn impl_macro_sql(target_fn: &ItemFn, args: &AttributeArgs) -> TokenS
             FnArg::Receiver(_) => {}
             FnArg::Typed(t) => {
                 let ty_stream = t.ty.to_token_stream().to_string();
-                if is_rbatis_ref(&ty_stream) {
+                if is_rb_ref(&ty_stream) {
                     rbatis_ident = t.pat.to_token_stream();
                     rbatis_name = rbatis_ident
                         .to_string()
@@ -32,31 +32,17 @@ pub(crate) fn impl_macro_sql(target_fn: &ItemFn, args: &AttributeArgs) -> TokenS
     }
 
     let mut sql_ident = quote!();
-    if args.len() >= 1 {
+    if args.sqls.len() >= 1 {
         if rbatis_name.is_empty() {
-            panic!("[rbatis] you should add rbatis ref param  rb:&Rbatis  or rb: &mut Executor<'_,'_>  on '{}()'!", target_fn.sig.ident);
+            panic!("[rb] you should add rbatis ref param  `rb:&dyn Executor`  on '{}()'!", target_fn.sig.ident);
         }
         let mut s = "".to_string();
-        for ele in args {
-            match ele {
-                NestedMeta::Meta(_) => {}
-                NestedMeta::Lit(l) => match l {
-                    Lit::Str(v) => {
-                        s = s + v.value().as_str();
-                    }
-                    Lit::ByteStr(_) => {}
-                    Lit::Byte(_) => {}
-                    Lit::Char(_) => {}
-                    Lit::Int(_) => {}
-                    Lit::Float(_) => {}
-                    Lit::Bool(_) => {}
-                    Lit::Verbatim(_) => {}
-                },
-            }
+        for v in &args.sqls {
+            s = s + v.value().as_str();
         }
         sql_ident = quote!(#s);
     } else {
-        panic!("[rbatis] Incorrect macro parameter length!");
+        panic!("[rb] Incorrect macro parameter length!");
     }
 
     let func_args_stream = target_fn.sig.inputs.to_token_stream();
@@ -134,7 +120,7 @@ fn filter_args_context_id(
         }
         sql_args_gen = quote! {
              #sql_args_gen
-             rb_args.push(rbs::to_value(#item).unwrap_or_default());
+             rb_args.push(rbs::to_value(#item)?);
         };
     }
     sql_args_gen

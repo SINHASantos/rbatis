@@ -1,15 +1,18 @@
 use proc_macro2::{Ident, Span};
 use quote::quote;
 use quote::ToTokens;
+use std::env::current_dir;
 use std::fs::File;
 use std::io::Read;
-use syn::{AttributeArgs, FnArg, ItemFn, Lit, NestedMeta};
+use std::path::PathBuf;
+use syn::{FnArg, ItemFn};
 
 use crate::macros::py_sql_impl;
 use crate::proc_macro::TokenStream;
-use crate::util::{find_fn_body, find_return_type, get_fn_args, is_query, is_rbatis_ref};
+use crate::util::{find_fn_body, find_return_type, get_fn_args, is_query, is_rb_ref};
+use crate::ParseArgs;
 
-pub(crate) fn impl_macro_html_sql(target_fn: &ItemFn, args: &AttributeArgs) -> TokenStream {
+pub(crate) fn impl_macro_html_sql(target_fn: &ItemFn, args: &ParseArgs) -> TokenStream {
     let return_ty = find_return_type(target_fn);
     let func_name_ident = target_fn.sig.ident.to_token_stream();
 
@@ -20,7 +23,7 @@ pub(crate) fn impl_macro_html_sql(target_fn: &ItemFn, args: &AttributeArgs) -> T
             FnArg::Receiver(_) => {}
             FnArg::Typed(t) => {
                 let ty_stream = t.ty.to_token_stream().to_string();
-                if is_rbatis_ref(&ty_stream) {
+                if is_rb_ref(&ty_stream) {
                     rbatis_ident = t.pat.to_token_stream();
                     rbatis_name = rbatis_ident
                         .to_string()
@@ -32,31 +35,20 @@ pub(crate) fn impl_macro_html_sql(target_fn: &ItemFn, args: &AttributeArgs) -> T
         }
     }
     let mut sql_ident = quote!();
-    if args.len() >= 1 {
+    if args.sqls.len() >= 1 {
         if rbatis_name.is_empty() {
-            panic!("[rbatis] you should add rbatis ref param  rb:&Rbatis  or rb: &mut Executor<'_,'_>  on '{}()'!", target_fn.sig.ident);
+            panic!(
+                "[rb] you should add rbatis ref param   `rb:&dyn Executor`  on '{}()'!",
+                target_fn.sig.ident
+            );
         }
         let mut s = "".to_string();
-        for ele in args {
-            match ele {
-                NestedMeta::Meta(_) => {}
-                NestedMeta::Lit(l) => match l {
-                    Lit::Str(v) => {
-                        s = s + v.value().as_str();
-                    }
-                    Lit::ByteStr(_) => {}
-                    Lit::Byte(_) => {}
-                    Lit::Char(_) => {}
-                    Lit::Int(_) => {}
-                    Lit::Float(_) => {}
-                    Lit::Bool(_) => {}
-                    Lit::Verbatim(_) => {}
-                },
-            }
+        for v in &args.sqls {
+            s = s + v.value().as_str();
         }
         sql_ident = quote!(#s);
     } else {
-        panic!("[rbatis] Incorrect macro parameter length!");
+        panic!("[rb] Incorrect macro parameter length!");
     }
     // sql_ident is html or file?
     let mut file_name = sql_ident.to_string().trim().to_string();
@@ -67,6 +59,20 @@ pub(crate) fn impl_macro_html_sql(target_fn: &ItemFn, args: &AttributeArgs) -> T
             .to_string();
     }
     if file_name.ends_with(".html") {
+        //relative path append realpath
+        let file_path = PathBuf::from(file_name.clone());
+        if file_path.is_relative() {
+            let mut manifest_dir =
+                std::env::var("CARGO_MANIFEST_DIR").expect("Failed to read CARGO_MANIFEST_DIR");
+            manifest_dir.push_str("/");
+            let mut current = PathBuf::from(manifest_dir);
+            current.push(file_name.clone());
+            if !current.exists() {
+                current = current_dir().unwrap_or_default();
+                current.push(file_name.clone());
+            }
+            file_name = current.to_str().unwrap_or_default().to_string();
+        }
         let mut html_data = String::new();
         let mut f = File::open(file_name.as_str())
             .expect(&format!("File Name = '{}' does not exist", file_name));
@@ -141,17 +147,22 @@ pub(crate) fn impl_macro_html_sql(target_fn: &ItemFn, args: &AttributeArgs) -> T
     }
     let generic = target_fn.sig.generics.clone();
     //gen rust code
+    let push_count = sql_args_gen
+        .to_string()
+        .matches("rb_arg_map.insert")
+        .count();
+
     return quote! {
        pub async fn #func_name_ident #generic(#func_args_stream) -> #return_ty {
          #include_data
-         let mut rb_arg_map = rbs::value::map::ValueMap::new();
+         let mut rb_arg_map = rbs::value::map::ValueMap::with_capacity(#push_count);
          #sql_args_gen
          #fn_body
-         use rbatis::executor::{RbatisRef};
-         let driver_type = #rbatis_ident.rbatis_ref().driver_type()?;
+         use rbatis::executor::{RBatisRef};
+         let driver_type = #rbatis_ident.rb_ref().driver_type()?;
          use rbatis::rbatis_codegen;
          #gen_func
-         let (mut sql,rb_args) = impl_html_sql(&rbs::Value::Map(rb_arg_map),'?');
+         let (mut sql,rb_args) = impl_html_sql(rbs::Value::Map(rb_arg_map),'?');
          #call_method
        }
     }

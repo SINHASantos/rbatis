@@ -97,24 +97,10 @@ macro_rules! impl_numeric_mul {
                 }
             }
 
-            impl Mul<Value> for $ty {
+            impl Mul<&$ty> for Value {
                 type Output = $return_ty;
-                fn op_mul(self, other: Value) -> Self::Output {
-                    $mul(&other, self as _)
-                }
-            }
-
-            impl Mul<&Value> for $ty {
-                type Output = $return_ty;
-                fn op_mul(self, other: &Value) -> Self::Output {
-                    $mul(other, self as _)
-                }
-            }
-
-            impl Mul<&&Value> for $ty {
-                type Output = $return_ty;
-                fn op_mul(self, other: &&Value) -> Self::Output {
-                    $mul(*other, self as _)
+                fn op_mul(self, other: &$ty) -> Self::Output {
+                    $mul(&self, *other as _)
                 }
             }
 
@@ -131,46 +117,81 @@ macro_rules! impl_numeric_mul {
                     $mul(self, *other as _)
                 }
             }
+
+            impl Mul<Value> for $ty {
+                type Output = $return_ty;
+                fn op_mul(self, other: Value) -> Self::Output {
+                    $mul(&other, self as _)
+                }
+            }
+
+            impl Mul<&Value> for $ty {
+                type Output = $return_ty;
+                fn op_mul(self, other: &Value) -> Self::Output {
+                    $mul(other, self as _)
+                }
+            }
+
+            impl Mul<Value> for &$ty {
+                type Output = $return_ty;
+                fn op_mul(self, other: Value) -> Self::Output {
+                    $mul(&other, *self as _)
+                }
+            }
+
+            impl Mul<&Value> for &$ty {
+                type Output = $return_ty;
+                fn op_mul(self, other: &Value) -> Self::Output {
+                    $mul(other, *self as _)
+                }
+            }
+            // for unary
+            impl Mul<&&Value> for $ty {
+                type Output = $return_ty;
+                fn op_mul(self, other: &&Value) -> Self::Output {
+                    $mul(other, self as _)
+                }
+            }
         )*)*
     }
 }
 
 impl_numeric_mul! {
     op_mul_u64[u8 u16 u32 u64] -> u64
-    op_mul_i64[i8 i16 i32 i64 isize] -> i64
+    op_mul_i64[i8 i16 i32 i64 isize usize] -> i64
     op_mul_f64[f32 f64] -> f64
 }
 
-macro_rules! mul_self {
+macro_rules! self_mul {
     ([$($ty:ty)*]) => {
         $(
 impl Mul<$ty> for $ty{
-         type Output = $ty;
+      type Output = $ty;
       fn op_mul(self, rhs: $ty) -> Self::Output {
         self * rhs
       }
-    }
+}
 impl Mul<&$ty> for $ty{
-         type Output = $ty;
+      type Output = $ty;
       fn op_mul(self, rhs: &$ty) -> Self::Output {
         self * *rhs
       }
-    }
+}
 impl Mul<$ty> for &$ty{
-         type Output = $ty;
+      type Output = $ty;
       fn op_mul(self, rhs: $ty) -> Self::Output {
         *self * rhs
       }
-    }
+}
 impl Mul<&$ty> for &$ty{
-         type Output = $ty;
+      type Output = $ty;
       fn op_mul(self, rhs: &$ty) -> Self::Output {
         *self * *rhs
       }
-    }
+}
         )*
     };
 }
-mul_self!([u8 u16 u32 u64]);
-mul_self!([i8 i16 i32 i64 isize]);
-mul_self!([f32 f64]);
+self_mul!([u8 u16 u32 u64]);
+self_mul!([i8 i16 i32 i64 isize usize]);
+self_mul!([f32 f64]);

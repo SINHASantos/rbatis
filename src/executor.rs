@@ -1,61 +1,86 @@
-use std::fmt::{Debug, Formatter};
-use std::ops::{Deref, DerefMut};
-
 use crate::decode::decode;
-use crate::rbatis::Rbatis;
-use crate::snowflake::new_snowflake_id;
-use crate::sql::tx::Tx;
+use crate::intercept::ResultType;
+use crate::rbatis::RBatis;
 use crate::Error;
+use dark_std::sync::SyncVec;
 use futures::Future;
 use futures_core::future::BoxFuture;
-use log::LevelFilter;
 use rbdc::db::{Connection, ExecResult};
+use rbdc::rt::tokio::sync::Mutex;
 use rbs::Value;
 use serde::de::DeserializeOwned;
+use std::any::Any;
+use std::fmt::{Debug, Formatter};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
-/// the rbatis's Executor. this trait impl with structs = Rbatis,RBatisConnExecutor,RBatisTxExecutor,RBatisTxExecutorGuard
-pub trait Executor: RbatisRef {
-    fn exec(&mut self, sql: &str, args: Vec<Value>) -> BoxFuture<'_, Result<ExecResult, Error>>;
-    fn query(&mut self, sql: &str, args: Vec<Value>) -> BoxFuture<'_, Result<Value, Error>>;
-}
-
-pub trait RbatisRef: Send {
-    fn rbatis_ref(&self) -> &Rbatis;
-
-    fn driver_type(&self) -> crate::Result<&str> {
-        self.rbatis_ref().driver_type()
+/// the RBatis Executor. this trait impl with structs = RBatis,RBatisConnExecutor,RBatisTxExecutor,RBatisTxExecutorGuard
+pub trait Executor: RBatisRef + Send + Sync {
+    fn id(&self) -> i64;
+    fn name(&self) -> &str {
+        std::any::type_name::<Self>()
+    }
+    fn exec(&self, sql: &str, args: Vec<Value>) -> BoxFuture<'_, Result<ExecResult, Error>>;
+    fn query(&self, sql: &str, args: Vec<Value>) -> BoxFuture<'_, Result<Value, Error>>;
+    fn as_any(&self) -> &dyn Any
+    where
+        Self: Sized,
+    {
+        self
     }
 }
 
-impl RbatisRef for Rbatis {
-    fn rbatis_ref(&self) -> &Rbatis {
+pub trait RBatisRef: Any + Send + Sync {
+    fn rb_ref(&self) -> &RBatis;
+
+    fn driver_type(&self) -> crate::Result<&str> {
+        self.rb_ref().driver_type()
+    }
+}
+
+impl RBatisRef for RBatis {
+    fn rb_ref(&self) -> &RBatis {
         self
     }
 }
 
 pub struct RBatisConnExecutor {
-    pub conn: Box<dyn Connection>,
-    pub rb: Rbatis,
+    pub id: i64,
+    pub rb: RBatis,
+    pub conn: Mutex<Box<dyn Connection>>,
+}
+
+impl RBatisConnExecutor {
+    pub fn new(id: i64, conn: Box<dyn Connection>, rb: RBatis) -> Self {
+        Self {
+            id: id,
+            conn: Mutex::new(conn),
+            rb: rb,
+        }
+    }
 }
 
 impl Debug for RBatisConnExecutor {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        self.rb.fmt(f)
+        f.debug_struct("RBatisTxExecutor")
+            .field("id", &self.id)
+            .field("rb", &self.rb)
+            .finish()
     }
 }
 
 impl RBatisConnExecutor {
-    pub async fn exec(&mut self, sql: &str, args: Vec<Value>) -> Result<ExecResult, Error> {
+    pub async fn exec(&self, sql: &str, args: Vec<Value>) -> Result<ExecResult, Error> {
         let v = Executor::exec(self, sql, args).await?;
         Ok(v)
     }
 
-    pub async fn query(&mut self, sql: &str, args: Vec<Value>) -> Result<Value, Error> {
+    pub async fn query(&self, sql: &str, args: Vec<Value>) -> Result<Value, Error> {
         let v = Executor::query(self, sql, args).await?;
         Ok(v)
     }
 
-    pub async fn query_decode<T>(&mut self, sql: &str, args: Vec<Value>) -> Result<T, Error>
+    pub async fn query_decode<T>(&self, sql: &str, args: Vec<Value>) -> Result<T, Error>
     where
         T: DeserializeOwned,
     {
@@ -65,91 +90,99 @@ impl RBatisConnExecutor {
 }
 
 impl Executor for RBatisConnExecutor {
-    fn exec(
-        &mut self,
-        sql: &str,
-        mut args: Vec<Value>,
-    ) -> BoxFuture<'_, Result<ExecResult, Error>> {
+    fn id(&self) -> i64 {
+        self.id
+    }
+
+    fn exec(&self, sql: &str, mut args: Vec<Value>) -> BoxFuture<'_, Result<ExecResult, Error>> {
         let mut sql = sql.to_string();
         Box::pin(async move {
-            let rb_task_id = new_snowflake_id();
-            let is_prepared = args.len() > 0;
-            for item in self.rbatis_ref().sql_intercepts.iter() {
-                item.do_intercept(self.rbatis_ref(), &mut sql, &mut args, is_prepared)?;
-            }
-            if self.rbatis_ref().log_plugin.is_enable() {
-                let b = Value::Array(args);
-                self.rbatis_ref().log_plugin.do_log(
-                    LevelFilter::Info,
-                    &format!(
-                        "[rbatis] [{}] Exec   ==> `{}` {}",
-                        &rb_task_id,
-                        sql,
-                        &b
-                    ),
-                );
-                args = b.into();
-            }
-            let result = self.conn.exec(&sql, args).await;
-            if self.rbatis_ref().log_plugin.is_enable() {
-                match &result {
-                    Ok(result) => {
-                        self.rbatis_ref().log_plugin.do_log(
-                            LevelFilter::Info,
-                            &format!(
-                                "[rbatis] [{}] RowsAffected <== {}",
-                                rb_task_id, result.rows_affected
-                            ),
-                        );
+            let rb_task_id = self.rb.task_id_generator.generate();
+            let mut before_result = Err(Error::from(""));
+            for item in self.rb_ref().intercepts.iter() {
+                let next = item
+                    .before(
+                        rb_task_id,
+                        self as &dyn Executor,
+                        &mut sql,
+                        &mut args,
+                        ResultType::Exec(&mut before_result),
+                    )
+                    .await?;
+                if let Some(next) = next {
+                    if !next {
+                        break;
                     }
-                    Err(e) => {
-                        self.rbatis_ref().log_plugin.do_log(
-                            LevelFilter::Error,
-                            &format!("[rbatis] [{}] ReturnError  <== {}", rb_task_id, e),
-                        );
+                } else {
+                    return before_result;
+                }
+            }
+            let mut args_after = args.clone();
+            let mut result = self.conn.lock().await.exec(&sql, args).await;
+            for item in self.rb_ref().intercepts.iter() {
+                let next = item
+                    .after(
+                        rb_task_id,
+                        self as &dyn Executor,
+                        &mut sql,
+                        &mut args_after,
+                        ResultType::Exec(&mut result),
+                    )
+                    .await?;
+                if let Some(next) = next {
+                    if !next {
+                        break;
                     }
+                } else {
+                    return result;
                 }
             }
             result
         })
     }
 
-    fn query(&mut self, sql: &str, mut args: Vec<Value>) -> BoxFuture<'_, Result<Value, Error>> {
+    fn query(&self, sql: &str, mut args: Vec<Value>) -> BoxFuture<'_, Result<Value, Error>> {
         let mut sql = sql.to_string();
         Box::pin(async move {
-            let rb_task_id = new_snowflake_id();
-            let is_prepared = args.len() > 0;
-            for item in self.rbatis_ref().sql_intercepts.iter() {
-                item.do_intercept(self.rbatis_ref(), &mut sql, &mut args, is_prepared)?;
-            }
-            if self.rbatis_ref().log_plugin.is_enable() {
-                let b = Value::Array(args);
-                self.rbatis_ref().log_plugin.do_log(
-                    LevelFilter::Info,
-                    &format!(
-                        "[rbatis] [{}] Query  ==> `{}` {}",
+            let rb_task_id = self.rb.task_id_generator.generate();
+            let mut before_result = Err(Error::from(""));
+            for item in self.rb_ref().intercepts.iter() {
+                let next = item
+                    .before(
                         rb_task_id,
-                        &sql,
-                        &b
-                    ),
-                );
-                args = b.into();
+                        self,
+                        &mut sql,
+                        &mut args,
+                        ResultType::Query(&mut before_result),
+                    )
+                    .await?;
+                if let Some(next) = next {
+                    if !next {
+                        break;
+                    }
+                } else {
+                    return before_result.map(|v| Value::from(v));
+                }
             }
-            let result = self.conn.get_values(&sql, args).await;
-            if self.rbatis_ref().log_plugin.is_enable() {
-                match &result {
-                    Ok(result) => {
-                        self.rbatis_ref().log_plugin.do_log(
-                            LevelFilter::Info,
-                            &format!("[rbatis] [{}] ReturnRows <== {}", rb_task_id, result.len()),
-                        );
+            let mut conn = self.conn.lock().await;
+            let mut args_after = args.clone();
+            let mut result = conn.get_values(&sql, args).await;
+            for item in self.rb_ref().intercepts.iter() {
+                let next = item
+                    .after(
+                        rb_task_id,
+                        self,
+                        &mut sql,
+                        &mut args_after,
+                        ResultType::Query(&mut result),
+                    )
+                    .await?;
+                if let Some(next) = next {
+                    if !next {
+                        break;
                     }
-                    Err(e) => {
-                        self.rbatis_ref().log_plugin.do_log(
-                            LevelFilter::Error,
-                            &format!("[rbatis] [{}] ReturnError  <== {}", rb_task_id, e),
-                        );
-                    }
+                } else {
+                    return result.map(|v| Value::from(v));
                 }
             }
             Ok(Value::Array(result?))
@@ -157,29 +190,50 @@ impl Executor for RBatisConnExecutor {
     }
 }
 
-impl RbatisRef for RBatisConnExecutor {
-    fn rbatis_ref(&self) -> &Rbatis {
+impl RBatisRef for RBatisConnExecutor {
+    fn rb_ref(&self) -> &RBatis {
         &self.rb
     }
 }
 
 impl RBatisConnExecutor {
-    pub async fn begin(self) -> crate::Result<RBatisTxExecutor> {
-        let tx = self.conn.begin().await?;
-        return Ok(RBatisTxExecutor {
-            tx_id: new_snowflake_id(),
-            conn: tx,
-            rb: self.rb,
-            done: false,
-        });
+    pub fn begin(self) -> BoxFuture<'static, Result<RBatisTxExecutor, Error>> {
+        Box::pin(async move {
+            let mut conn = self.conn.into_inner();
+            conn.begin().await?;
+            Ok(RBatisTxExecutor::new(
+                self.rb.task_id_generator.generate(),
+                self.rb,
+                conn,
+            ))
+        })
+    }
+
+    pub fn rollback(&self) -> BoxFuture<'_, Result<(), Error>> {
+        Box::pin(async { Ok(self.conn.lock().await.rollback().await?) })
+    }
+
+    pub fn commit(&self) -> BoxFuture<'_, Result<(), Error>> {
+        Box::pin(async { Ok(self.conn.lock().await.commit().await?) })
     }
 }
 
+/// `RBatisTxExecutor` is a type that represents an executor for transactional operations in RBatis.
+///
+/// # Type Description
+///
+/// The `RBatisTxExecutor` is responsible for executing SQL statements within the context of a transaction.
+/// It provides methods to execute queries, updates, and other SQL operations, ensuring that all operations
+/// are part of the same transactional context.
+#[derive(Clone)]
 pub struct RBatisTxExecutor {
     pub tx_id: i64,
-    pub conn: Box<dyn Connection>,
-    pub rb: Rbatis,
-    pub done: bool,
+    pub conn: Arc<Mutex<Box<dyn Connection>>>,
+    pub rb: RBatis,
+    /// please use tx.done()
+    /// if tx call .commit() or .rollback() done = true.
+    /// if tx not call .commit() or .rollback() done = false
+    done: Arc<AtomicBool>,
 }
 
 impl Debug for RBatisTxExecutor {
@@ -187,115 +241,167 @@ impl Debug for RBatisTxExecutor {
         f.debug_struct("RBatisTxExecutor")
             .field("tx_id", &self.tx_id)
             .field("rb", &self.rb)
+            .field("done", &self.done)
             .finish()
     }
 }
 
 impl<'a> RBatisTxExecutor {
+    pub fn new(tx_id: i64, rb: RBatis, conn: Box<dyn Connection>) -> Self {
+        RBatisTxExecutor {
+            tx_id: tx_id,
+            conn: Arc::new(Mutex::new(conn)),
+            rb: rb,
+            done: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     /// exec
-    pub async fn exec(&mut self, sql: &str, args: Vec<Value>) -> Result<ExecResult, Error> {
+    pub async fn exec(&self, sql: &str, args: Vec<Value>) -> Result<ExecResult, Error> {
         let v = Executor::exec(self, sql, args).await?;
         Ok(v)
     }
     /// query value
-    pub async fn query(&mut self, sql: &str, args: Vec<Value>) -> Result<Value, Error> {
+    pub async fn query(&self, sql: &str, args: Vec<Value>) -> Result<Value, Error> {
         let v = Executor::query(self, sql, args).await?;
         Ok(v)
     }
     /// query and decode
-    pub async fn query_decode<T>(&mut self, sql: &str, args: Vec<Value>) -> Result<T, Error>
+    pub async fn query_decode<T>(&self, sql: &str, args: Vec<Value>) -> Result<T, Error>
     where
         T: DeserializeOwned,
     {
         let v = Executor::query(self, sql, args).await?;
         Ok(decode(v)?)
     }
+
+    pub fn begin(self) -> BoxFuture<'static, Result<Self, Error>> {
+        Box::pin(async move {
+            self.conn.lock().await.begin().await?;
+            Ok(self)
+        })
+    }
+
+    pub fn rollback(&self) -> BoxFuture<'_, Result<(), Error>> {
+        Box::pin(async {
+            let r = self.conn.lock().await.rollback().await?;
+            self.done.store(true, Ordering::Relaxed);
+            Ok(r)
+        })
+    }
+
+    pub fn commit(&self) -> BoxFuture<'_, Result<(), Error>> {
+        Box::pin(async {
+            let r = self.conn.lock().await.commit().await?;
+            self.done.store(true, Ordering::Relaxed);
+            Ok(r)
+        })
+    }
+
+    /// tx is done?
+    pub fn done(&self) -> bool {
+        self.done.load(Ordering::Relaxed)
+    }
+
+    ///change is done
+    pub fn set_done(&self, done: bool) {
+        self.done.store(done, Ordering::Relaxed)
+    }
 }
 
 impl Executor for RBatisTxExecutor {
-    fn exec(
-        &mut self,
-        sql: &str,
-        mut args: Vec<Value>,
-    ) -> BoxFuture<'_, Result<ExecResult, Error>> {
+    fn id(&self) -> i64 {
+        self.tx_id
+    }
+
+    fn exec(&self, sql: &str, mut args: Vec<Value>) -> BoxFuture<'_, Result<ExecResult, Error>> {
         let mut sql = sql.to_string();
         Box::pin(async move {
-            let is_prepared = args.len() > 0;
-            for item in self.rbatis_ref().sql_intercepts.iter() {
-                item.do_intercept(self.rbatis_ref(), &mut sql, &mut args, is_prepared)?;
-            }
-            if self.rbatis_ref().log_plugin.is_enable() {
-                let b = Value::Array(args);
-                self.rbatis_ref().log_plugin.do_log(
-                    LevelFilter::Info,
-                    &format!(
-                        "[rbatis] [{}] Exec   ==> `{}` {}",
+            let mut before_result = Err(Error::from(""));
+            for item in self.rb_ref().intercepts.iter() {
+                let next = item
+                    .before(
                         self.tx_id,
-                        &sql,
-                        &b
-                    ),
-                );
-                args = b.into();
+                        self,
+                        &mut sql,
+                        &mut args,
+                        ResultType::Exec(&mut before_result),
+                    )
+                    .await?;
+                if let Some(next) = next {
+                    if !next {
+                        break;
+                    }
+                } else {
+                    return before_result;
+                }
             }
-            let result = self.conn.exec(&sql, args).await;
-            if self.rbatis_ref().log_plugin.is_enable() {
-                match &result {
-                    Ok(result) => {
-                        self.rbatis_ref().log_plugin.do_log(
-                            LevelFilter::Info,
-                            &format!(
-                                "[rbatis] [{}] RowsAffected <== {}",
-                                self.tx_id, result.rows_affected
-                            ),
-                        );
+            let mut args_after = args.clone();
+            let mut result = self.conn.lock().await.exec(&sql, args).await;
+            for item in self.rb_ref().intercepts.iter() {
+                let next = item
+                    .after(
+                        self.tx_id,
+                        self,
+                        &mut sql,
+                        &mut args_after,
+                        ResultType::Exec(&mut result),
+                    )
+                    .await?;
+                if let Some(next) = next {
+                    if !next {
+                        break;
                     }
-                    Err(e) => {
-                        self.rbatis_ref().log_plugin.do_log(
-                            LevelFilter::Error,
-                            &format!("[rbatis] [{}] ReturnError  <== {}", self.tx_id, e),
-                        );
-                    }
+                } else {
+                    return result;
                 }
             }
             result
         })
     }
 
-    fn query(&mut self, sql: &str, mut args: Vec<Value>) -> BoxFuture<'_, Result<Value, Error>> {
+    fn query(&self, sql: &str, mut args: Vec<Value>) -> BoxFuture<'_, Result<Value, Error>> {
         let mut sql = sql.to_string();
         Box::pin(async move {
-            let is_prepared = args.len() > 0;
-            for item in self.rbatis_ref().sql_intercepts.iter() {
-                item.do_intercept(self.rbatis_ref(), &mut sql, &mut args, is_prepared)?;
-            }
-            if self.rbatis_ref().log_plugin.is_enable() {
-                let b = Value::Array(args);
-                self.rbatis_ref().log_plugin.do_log(
-                    LevelFilter::Info,
-                    &format!(
-                        "[rbatis] [{}] Query  ==> `{}` {}",
+            let mut before_result = Err(Error::from(""));
+            for item in self.rb_ref().intercepts.iter() {
+                let next = item
+                    .before(
                         self.tx_id,
-                        &sql,
-                        &b
-                    ),
-                );
-                args = b.into();
+                        self,
+                        &mut sql,
+                        &mut args,
+                        ResultType::Query(&mut before_result),
+                    )
+                    .await?;
+                if let Some(next) = next {
+                    if next {
+                        break;
+                    }
+                } else {
+                    return before_result.map(|v| Value::from(v));
+                }
             }
-            let result = self.conn.get_values(&sql, args).await;
-            if self.rbatis_ref().log_plugin.is_enable() {
-                match &result {
-                    Ok(result) => {
-                        self.rbatis_ref().log_plugin.do_log(
-                            LevelFilter::Info,
-                            &format!("[rbatis] [{}] ReturnRows <== {}", self.tx_id, result.len()),
-                        );
+            let mut conn = self.conn.lock().await;
+            let mut args_after = args.clone();
+            let conn = conn.get_values(&sql, args);
+            let mut result = conn.await;
+            for item in self.rb_ref().intercepts.iter() {
+                let next = item
+                    .after(
+                        self.tx_id,
+                        self,
+                        &mut sql,
+                        &mut args_after,
+                        ResultType::Query(&mut result),
+                    )
+                    .await?;
+                if let Some(next) = next {
+                    if !next {
+                        break;
                     }
-                    Err(e) => {
-                        self.rbatis_ref().log_plugin.do_log(
-                            LevelFilter::Error,
-                            &format!("[rbatis] [{}] ReturnError <== {}", self.tx_id, e),
-                        );
-                    }
+                } else {
+                    return result.map(|v| Value::from(v));
                 }
             }
             Ok(Value::Array(result?))
@@ -303,52 +409,35 @@ impl Executor for RBatisTxExecutor {
     }
 }
 
-impl RbatisRef for RBatisTxExecutor {
-    fn rbatis_ref(&self) -> &Rbatis {
+impl RBatisRef for RBatisTxExecutor {
+    fn rb_ref(&self) -> &RBatis {
         &self.rb
     }
 }
 
 impl RBatisTxExecutor {
-    pub async fn begin(mut self) -> crate::Result<Self> {
-        self.conn = self.conn.begin().await?;
-        return Ok(self);
-    }
-    pub async fn commit(&mut self) -> crate::Result<bool> {
-        if let Ok(()) = self.conn.commit().await {
-            self.done = true;
+    pub fn take_connection(self) -> Option<Box<dyn Connection>> {
+        match Arc::into_inner(self.conn) {
+            None => None,
+            Some(v) => {
+                let inner = v.into_inner();
+                Some(inner)
+            }
         }
-        return Ok(self.done);
-    }
-    pub async fn rollback(&mut self) -> crate::Result<bool> {
-        if let Ok(()) = self.conn.rollback().await {
-            self.done = true;
-        }
-        return Ok(self.done);
-    }
-
-    pub fn take_conn(self) -> Box<dyn Connection> {
-        return self.conn;
     }
 }
 
-impl Deref for RBatisTxExecutor {
-    type Target = Box<dyn Connection>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.conn
-    }
-}
-
-impl DerefMut for RBatisTxExecutor {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.conn
-    }
-}
-
+/// `RBatisTxExecutorGuard` is a guard object that manages transactions for RBatis.
+///
+/// # Type Description
+///
+/// The `RBatisTxExecutorGuard` implements the `Drop` trait to ensure that transactions are
+/// automatically committed or rolled back when the guard goes out of scope. It encapsulates
+/// the transaction executor and provides a set of methods to manipulate database transactions.
+#[derive(Clone)]
 pub struct RBatisTxExecutorGuard {
-    pub tx: Option<RBatisTxExecutor>,
-    pub callback: Box<dyn FnMut(RBatisTxExecutor) + Send>,
+    pub tx: RBatisTxExecutor,
+    pub callback: Arc<dyn FnMut(RBatisTxExecutor) + Send + Sync>,
 }
 
 impl Debug for RBatisTxExecutorGuard {
@@ -360,125 +449,103 @@ impl Debug for RBatisTxExecutorGuard {
 }
 
 impl RBatisTxExecutorGuard {
-    pub async fn begin(&mut self) -> crate::Result<()> {
-        let v = self
-            .tx
-            .take()
-            .ok_or_else(|| Error::from("[rbatis] tx is committed"))?
-            .begin()
-            .await?;
-        self.tx = Some(v);
-        return Ok(());
+    pub fn tx_id(&self) -> i64 {
+        self.tx.tx_id
     }
 
-    pub async fn commit(&mut self) -> crate::Result<bool> {
-        let tx = self
-            .tx
-            .as_mut()
-            .ok_or_else(|| Error::from("[rbatis] tx is committed"))?;
-        return Ok(tx.commit().await?);
+    pub async fn commit(&self) -> crate::Result<()> {
+        self.tx.commit().await?;
+        Ok(())
     }
 
-    pub async fn rollback(&mut self) -> crate::Result<bool> {
-        let tx = self
-            .tx
-            .as_mut()
-            .ok_or_else(|| Error::from("[rbatis] tx is committed"))?;
-        return Ok(tx.rollback().await?);
+    pub async fn rollback(&self) -> crate::Result<()> {
+        self.tx.rollback().await?;
+        Ok(())
     }
 
-    pub fn take_conn(mut self) -> Option<Box<dyn Connection>> {
-        match self.tx.take() {
-            None => None,
-            Some(s) => s.take_conn().into(),
-        }
+    pub fn take_connection(self) -> Option<Box<dyn Connection>> {
+        self.tx.clone().take_connection()
+    }
+
+    pub async fn query_decode<T>(&self, sql: &str, args: Vec<Value>) -> Result<T, Error>
+    where
+        T: DeserializeOwned,
+    {
+        self.tx.query_decode(sql, args).await
     }
 }
 
 impl RBatisTxExecutor {
     /// defer and use future method
     /// for example:
-    ///         tx.defer_async(|mut tx| async {
-    ///             tx.rollback().await;
-    ///         });
+    /// ```rust
+    ///  use rbatis::executor::RBatisTxExecutor;
+    ///  use rbatis::{Error, RBatis};
     ///
-    pub fn defer_async<F>(self, callback: fn(s: RBatisTxExecutor) -> F) -> RBatisTxExecutorGuard
+    ///  async fn test_tx(tx:RBatisTxExecutor) -> Result<(),Error>{
+    ///         tx.defer_async(|tx| async move {
+    ///              if !tx.done(){ let _ = tx.rollback().await; }
+    ///         });
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn defer_async<F>(&self, callback: fn(s: RBatisTxExecutor) -> F) -> RBatisTxExecutorGuard
     where
         F: Future<Output = ()> + Send + 'static,
     {
         RBatisTxExecutorGuard {
-            tx: Some(self),
-            callback: Box::new(move |arg| {
-                let rb = arg.rbatis_ref().clone();
+            tx: self.clone(),
+            callback: Arc::new(move |arg| {
                 let future = callback(arg);
-                if let Ok(pool) = rb.get_pool() {
-                    pool.spawn_task(future);
-                }
+                rbdc::rt::spawn(future);
             }),
         }
     }
 }
 
-impl Deref for RBatisTxExecutorGuard {
-    type Target = RBatisTxExecutor;
-
-    fn deref(&self) -> &Self::Target {
-        &self.tx.as_ref().unwrap()
-    }
-}
-
-impl<'a> DerefMut for RBatisTxExecutorGuard {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.tx.as_mut().unwrap()
-    }
-}
-
 impl Drop for RBatisTxExecutorGuard {
     fn drop(&mut self) {
-        if let Some(tx) = self.tx.take() {
-            (self.callback)(tx);
+        match Arc::get_mut(&mut self.callback) {
+            None => {}
+            Some(callback) => {
+                callback(self.tx.clone());
+            }
         }
     }
 }
 
-impl RbatisRef for RBatisTxExecutorGuard {
-    fn rbatis_ref(&self) -> &Rbatis {
-        &self.rb
+impl RBatisRef for RBatisTxExecutorGuard {
+    fn rb_ref(&self) -> &RBatis {
+        self.tx.rb_ref()
     }
 }
 
 impl Executor for RBatisTxExecutorGuard {
-    fn exec(&mut self, sql: &str, args: Vec<Value>) -> BoxFuture<'_, Result<ExecResult, Error>> {
-        let sql = sql.to_string();
-        Box::pin(async move {
-            match self.tx.as_mut() {
-                None => Err(Error::from("the tx is done!")),
-                Some(v) => v.exec(&sql, args).await,
-            }
-        })
+    fn id(&self) -> i64 {
+        self.tx.id()
     }
 
-    fn query(&mut self, sql: &str, args: Vec<Value>) -> BoxFuture<'_, Result<Value, Error>> {
+    fn exec(&self, sql: &str, args: Vec<Value>) -> BoxFuture<'_, Result<ExecResult, Error>> {
         let sql = sql.to_string();
-        Box::pin(async move {
-            match self.tx.as_mut() {
-                None => Err(Error::from("the tx is done!")),
-                Some(v) => v.query(&sql, args).await,
-            }
-        })
+        Box::pin(async move { self.tx.exec(&sql, args).await })
+    }
+
+    fn query(&self, sql: &str, args: Vec<Value>) -> BoxFuture<'_, Result<Value, Error>> {
+        let sql = sql.to_string();
+        Box::pin(async move { self.tx.query(&sql, args).await })
     }
 }
 
-impl Rbatis {
+impl RBatis {
     /// exec sql
-    pub async fn exec(&self, sql: &str, args: Vec<Value>) -> Result<rbdc::db::ExecResult, Error> {
-        let mut conn = self.acquire().await?;
+    pub async fn exec(&self, sql: &str, args: Vec<Value>) -> Result<ExecResult, Error> {
+        let conn = self.acquire().await?;
         conn.exec(sql, args).await
     }
 
     /// query raw Value
     pub async fn query(&self, sql: &str, args: Vec<Value>) -> Result<Value, Error> {
-        let mut conn = self.acquire().await?;
+        let conn = self.acquire().await?;
         let v = conn.query(sql, args).await?;
         Ok(v)
     }
@@ -488,50 +555,95 @@ impl Rbatis {
     where
         T: DeserializeOwned,
     {
-        let mut conn = self.acquire().await?;
+        let conn = self.acquire().await?;
         let v = conn.query(sql, args).await?;
         Ok(decode(v)?)
     }
 }
 
-impl Executor for Rbatis {
-    fn exec(&mut self, sql: &str, args: Vec<Value>) -> BoxFuture<'_, Result<ExecResult, Error>> {
+impl Executor for RBatis {
+    fn id(&self) -> i64 {
+        0
+    }
+
+    fn exec(&self, sql: &str, args: Vec<Value>) -> BoxFuture<'_, Result<ExecResult, Error>> {
         let sql = sql.to_string();
         Box::pin(async move {
-            let mut conn = self.acquire().await?;
+            let conn = self.acquire().await?;
             conn.exec(&sql, args).await
         })
     }
 
-    fn query(&mut self, sql: &str, args: Vec<Value>) -> BoxFuture<'_, Result<Value, Error>> {
+    fn query(&self, sql: &str, args: Vec<Value>) -> BoxFuture<'_, Result<Value, Error>> {
         let sql = sql.to_string();
         Box::pin(async move {
-            let mut conn = self.acquire().await?;
+            let conn = self.acquire().await?;
             conn.query(&sql, args).await
         })
     }
 }
 
-impl RbatisRef for &Rbatis {
-    fn rbatis_ref(&self) -> &Rbatis {
-        self
+#[derive(Debug)]
+pub struct TempExecutor<'a> {
+    pub rb: &'a RBatis,
+    pub sql: SyncVec<String>,
+    pub args: SyncVec<Vec<Value>>,
+}
+
+impl<'a> TempExecutor<'a> {
+    pub fn new(rb: &'a RBatis) -> Self {
+        Self {
+            rb: rb,
+            sql: SyncVec::new(),
+            args: SyncVec::new(),
+        }
+    }
+
+    pub fn clear_sql(&self) -> Vec<String> {
+        let mut arr = vec![];
+        loop {
+            if let Some(v) = self.sql.remove(0) {
+                arr.push(v);
+            } else {
+                break;
+            }
+        }
+        arr
+    }
+
+    pub fn clear_args(&self) -> Vec<Vec<Value>> {
+        let mut arr = vec![];
+        loop {
+            if let Some(v) = self.args.remove(0) {
+                arr.push(v);
+            } else {
+                break;
+            }
+        }
+        arr
     }
 }
 
-impl Executor for &Rbatis {
-    fn exec(&mut self, sql: &str, args: Vec<Value>) -> BoxFuture<'_, Result<ExecResult, Error>> {
-        let sql = sql.to_string();
-        Box::pin(async move {
-            let mut conn = self.acquire().await?;
-            conn.exec(&sql, args).await
-        })
+impl RBatisRef for TempExecutor<'static> {
+    fn rb_ref(&self) -> &RBatis {
+        self.rb
+    }
+}
+
+impl Executor for TempExecutor<'static> {
+    fn id(&self) -> i64 {
+        0
     }
 
-    fn query(&mut self, sql: &str, args: Vec<Value>) -> BoxFuture<'_, Result<Value, Error>> {
-        let sql = sql.to_string();
-        Box::pin(async move {
-            let mut conn = self.acquire().await?;
-            conn.query(&sql, args).await
-        })
+    fn exec(&self, sql: &str, args: Vec<Value>) -> BoxFuture<'_, Result<ExecResult, Error>> {
+        self.sql.push(sql.to_string());
+        self.args.push(args);
+        Box::pin(async { Ok(ExecResult::default()) })
+    }
+
+    fn query(&self, sql: &str, args: Vec<Value>) -> BoxFuture<'_, Result<Value, Error>> {
+        self.sql.push(sql.to_string());
+        self.args.push(args);
+        Box::pin(async { Ok(Value::default()) })
     }
 }
