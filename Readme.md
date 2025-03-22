@@ -361,10 +361,13 @@ You are welcome to submit the merge, and make sure that any functionality you ad
 
 # Ask AI For Help(AI帮助)
 
-<a href="https://chatglm.cn/main/gdetail/6604ffe818d17f1aaa8d9cf8">
-<img style="width: 200px;height: 290px;" width="200" height="290" src="ai.jpg" alt="" />
-</a>
+You can feed [ai.md (English)](ai.md) or [ai_cn.md (中文)](ai_cn.md) to Large Language Models like Claude or GPT to get help with using Rbatis.
 
+我们准备了详细的文档 [ai_cn.md (中文)](ai_cn.md) 和 [ai.md (English)](ai.md)，您可以将它们提供给Claude或GPT等大型语言模型，以获取关于使用Rbatis的帮助。
+
+You can download these files directly:
+- [Download ai.md (English)](https://raw.githubusercontent.com/rbatis/rbatis/master/ai.md)
+- [Download ai_cn.md (中文)](https://raw.githubusercontent.com/rbatis/rbatis/master/ai_cn.md)
 
 * [![discussions](https://img.shields.io/github/discussions/rbatis/rbatis)](https://github.com/rbatis/rbatis/discussions)
 
