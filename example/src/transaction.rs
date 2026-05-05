@@ -41,7 +41,6 @@ pub async fn main() -> Result<(), Error> {
     let tx = rb.acquire_begin().await?.auto_commit();
     transaction(tx, true).await?;
     // forget commit ,tx will rollback here.
-    drop(tx);
     // will do commit
     let conn = rb.acquire().await?;
     let tx2 = conn.begin().await?.auto_commit();
