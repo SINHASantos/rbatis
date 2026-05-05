@@ -50,19 +50,21 @@ pub async fn main() -> Result<(), Error> {
     Ok(())
 }
 
+/// or you can use
+// let tx = tx.defer_async(|tx| async move {
+//     if tx.done() {
+//         log::info!("transaction [{}] complete.", tx.tx_id);
+//     } else {
+//         let r = tx.rollback().await;
+//         if let Err(e) = r {
+//             log::error!("transaction [{}] rollback fail={}", tx.tx_id, e);
+//         } else {
+//             log::info!("transaction [{}] rollback", tx.tx_id);
+//         }
+//     }
+// });
 async fn transaction(tx: RBatisTxExecutor, forget_commit: bool) -> Result<(), Error> {
-    let tx = tx.defer_async(|tx| async move {
-        if tx.done() {
-            log::info!("transaction [{}] complete.", tx.tx_id);
-        } else {
-            let r = tx.rollback().await;
-            if let Err(e) = r {
-                log::error!("transaction [{}] rollback fail={}", tx.tx_id, e);
-            } else {
-                log::info!("transaction [{}] rollback", tx.tx_id);
-            }
-        }
-    });
+    let tx = tx.auto_commit(); // defer commit or rollback
     log::info!("transaction [{}] start", tx.tx_id());
     let _ = Activity::insert(
         &tx,

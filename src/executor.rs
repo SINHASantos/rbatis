@@ -348,6 +348,29 @@ impl RBatisTxExecutor {
             }),
         }
     }
+
+    /// auto commit or rollback when transaction is done
+    pub fn auto_commit(&self) -> RBatisTxExecutorGuard {
+        RBatisTxExecutorGuard {
+            tx: self.clone(),
+            callback: Arc::new(move |tx| {
+                let future = async move {
+                    if tx.done() {
+                        let r = tx.commit().await;
+                        if let Err(e) = r {
+                            log::error!("transaction [{}] commit fail={}", tx.tx_id, e);
+                        }
+                    } else {
+                        let r = tx.rollback().await;
+                        if let Err(e) = r {
+                            log::error!("transaction [{}] rollback fail={}", tx.tx_id, e);
+                        }
+                    }
+                };
+                rbdc::rt::spawn(future);
+            }),
+        }
+    }
 }
 
 impl Executor for RBatisTxExecutor {
