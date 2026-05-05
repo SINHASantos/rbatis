@@ -1,8 +1,7 @@
 use log::LevelFilter;
 use rbatis::dark_std::defer;
-use rbatis::executor::RBatisTxExecutor;
 use rbatis::rbdc::datetime::DateTime;
-use rbatis::{Error, RBatis};
+use rbatis::{Error, RBatis, RBatisTxExecutorGuard};
 use rbs::value;
 
 /// table
@@ -39,32 +38,18 @@ pub async fn main() -> Result<(), Error> {
     let _ = Activity::delete_by_map(&rb.clone(), value! {"id":["3"]}).await;
 
     // will forget commit
-    let tx = rb.acquire_begin().await?;
+    let tx = rb.acquire_begin().await?.auto_commit();
     transaction(tx, true).await?;
 
     // will do commit
     let conn = rb.acquire().await?;
-    let tx = conn.begin().await?;
-    transaction(tx, false).await?;
+    let tx2 = conn.begin().await?.auto_commit();
+    transaction(tx2, false).await?;
 
     Ok(())
 }
 
-/// or you can use
-// let tx = tx.defer_async(|tx| async move {
-//     if tx.done() {
-//         log::info!("transaction [{}] complete.", tx.tx_id);
-//     } else {
-//         let r = tx.rollback().await;
-//         if let Err(e) = r {
-//             log::error!("transaction [{}] rollback fail={}", tx.tx_id, e);
-//         } else {
-//             log::info!("transaction [{}] rollback", tx.tx_id);
-//         }
-//     }
-// });
-async fn transaction(tx: RBatisTxExecutor, forget_commit: bool) -> Result<(), Error> {
-    let tx = tx.auto_commit(); // defer commit or rollback
+async fn transaction(tx: RBatisTxExecutorGuard, forget_commit: bool) -> Result<(), Error> {
     log::info!("transaction [{}] start", tx.tx_id());
     let _ = Activity::insert(
         &tx,
