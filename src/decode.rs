@@ -1,5 +1,4 @@
 //! Types and traits for decoding values from the database.
-use std::ops::Index;
 
 use rbs::Value;
 use serde::de::DeserializeOwned;
@@ -16,21 +15,12 @@ pub fn decode_ref<T>(values: &Value) -> Result<T, Error>
 where
     T: DeserializeOwned,
 {
-    // Check if value is Array first (required by API contract)
     match values {
         Value::Array(_) => {
             // First try rbs direct decode (handles [{k:v},...] format to Vec<T>)
-            let direct_result = rbs::from_value_ref::<T>(values);
-            if direct_result.is_ok() {
-                return direct_result;
-            }
-            // If direct decode failed, try the old map format conversion
-            try_decode_map(values)
+            rbs::from_value_ref::<T>(values).or_else(|_| try_decode_elements(values))
         }
-        _ => {
-            // Non-array values are not supported (maintain API contract)
-            Err(Error::from("decode error: expected array value"))
-        }
+        _ => Err(Error::from("decode error: expected array value")),
     }
 }
 
@@ -41,42 +31,40 @@ where
     decode_ref(&bs)
 }
 
-//decode one type from array of maps
-/// values = [{k:v},...]
-pub fn try_decode_map<T>(datas: &Value) -> Result<T, Error>
-where
-    T: DeserializeOwned,
-{
-    // Handle empty array case
-    if datas.is_empty() {
-        return Err(Error::from("decode empty array value"));
-    }
-    //decode struct
-    if datas.len() > 1 {
-        return Err(Error::from(format!(
-            "[rb] rows.rows_affected > 1,but decode one type ({})!",
-            std::any::type_name::<T>()
-        )));
-    }
-    let values = datas.index(0);
-    if let Value::Map(arr) = values {
-        if arr.len() == 1 {
-            // 尝试直接解码单个元素，失败则继续 fallback 到 Vec 方式
-            if let Some((_key, value)) = arr.into_iter().next() {
-                if let Ok(result) = rbs::from_value_ref::<T>(value) {
-                    return Ok(result);
-                }
+/// Iterate over all elements, trying each as T.
+/// Unwraps single-element containers ({k:v} → v, [v] → v) so that
+/// the raw rbs type error propagates instead of a misleading wrapper.
+pub fn try_decode_elements<T: DeserializeOwned>(datas: &Value) -> Result<T, Error> {
+    let items = match datas {
+        Value::Array(items) => items,
+        _ => return rbs::from_value_ref::<T>(datas).map_err(Into::into),
+    };
+
+    let mut last_err = None;
+    for item in items {
+        if let Ok(r) = rbs::from_value_ref::<T>(item) {
+            return Ok(r);
+        }
+        let is_map = matches!(item, Value::Map(_));
+        last_err = rbs::from_value_ref::<T>(item).err().map(Error::from);
+
+        // Unwrap single-element containers so rbs produces the raw type error
+        let inner = match item {
+            Value::Map(m) if m.len() == 1 => m.into_iter().next().map(|(_, v)| v),
+            Value::Array(a) if a.len() == 1 => Some(&a[0]),
+            _ => None,
+        };
+        if let Some(v) = inner {
+            if let Ok(r) = rbs::from_value_ref::<T>(v) {
+                return Ok(r);
+            }
+            if !is_map {
+                last_err = rbs::from_value_ref::<T>(v).err().map(Error::from);
             }
         }
     }
-    //convert to map (for struct types or when direct decode fails)
-    let arr: Vec<T> = rbs::from_value_ref(datas)?;
-    arr.into_iter().next().ok_or_else(|| {
-        Error::from(format!(
-            "[rb] decode fail: cannot decode into type {} from empty result",
-            std::any::type_name::<T>()
-        ))
-    })
+
+    Err(last_err.unwrap_or_else(|| Error::from("decode fail")))
 }
 
 pub fn is_debug_mode() -> bool {

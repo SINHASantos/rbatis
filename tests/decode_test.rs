@@ -145,17 +145,13 @@ mod test {
 
     #[test]
     fn test_decode_multiple_rows_to_single_type() {
-        // 测试解码多行数据到单一类型的情况（应当返回错误）
-        // [{k:value}] format with multiple rows
+        // 多行数据中每行都能解包为 i32，返回第一个成功值
         let data = Value::Array(vec![
             make_map("a", Value::I64(1)),
             make_map("a", Value::I64(2)),
         ]);
-
-        let result = rbatis::decode::<i32>(data);
-        assert!(result.is_err());
-        let err = result.err().unwrap();
-        assert!(err.to_string().contains("rows.rows_affected > 1"));
+        let result: i32 = rbatis::decode(data).unwrap();
+        assert_eq!(result, 1);
     }
 
     #[test]
@@ -163,6 +159,21 @@ mod test {
         // [{k:value}] format
         let v: f32 = rbatis::decode(Value::Array(vec![make_map("a", Value::F64(1.0))])).unwrap();
         assert_eq!(v, 1.0);
+    }
+
+    //https://github.com/rbatis/rbatis/issues/498
+    #[test]
+    fn test_decode_type_fail_498() {
+        // CSV format with float that can't be parsed as i64
+        let m = Value::Array(vec![
+            Value::Array(vec![Value::String("aa".to_string())]),
+            Value::Array(vec![Value::F64(0.0)]),
+        ]);
+        let v = rbatis::decode::<i64>(m).err().unwrap();
+        assert_eq!(
+            v.to_string(),
+            "invalid type: floating point `0.0`, expected i64"
+        );
     }
 
     #[test]

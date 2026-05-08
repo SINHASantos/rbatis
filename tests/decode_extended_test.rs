@@ -1,5 +1,5 @@
 /// Extended tests for decode module covering:
-/// - try_decode_map edge cases (single element fallback)
+/// - try_decode_elements edge cases (single element fallback)
 /// - Non-array value decode errors
 /// - Various type decodes beyond existing coverage
 
@@ -15,18 +15,18 @@ mod test {
         Value::Map(map)
     }
 
-    // ==================== try_decode_map Edge Cases ====================
+    // ==================== try_decode_elements Edge Cases ====================
 
     #[test]
-    fn test_try_decode_map_single_element_direct_decode() {
+    fn test_try_decode_elements_single_element_direct_decode() {
         // When there's a single-element map and it can be decoded directly
         let value = Value::Array(vec![make_map("", Value::I32(42))]);
-        let result: i32 = rbatis::decode::try_decode_map(&value).unwrap();
+        let result: i32 = rbatis::decode::try_decode_elements(&value).unwrap();
         assert_eq!(result, 42);
     }
 
     #[test]
-    fn test_try_decode_map_struct_from_map_format() {
+    fn test_try_decode_elements_struct_from_map_format() {
         // [{id: 1, name: "test"}] -> TestDecodeStruct
         let value = Value::Array(vec![{
             let mut m = ValueMap::new();
@@ -38,7 +38,7 @@ mod test {
             Value::Map(m)
         }]);
 
-        let result: TestDecodeStruct = rbatis::decode::try_decode_map(&value).unwrap();
+        let result: TestDecodeStruct = rbatis::decode::try_decode_elements(&value).unwrap();
         assert_eq!(result.id, 99);
         assert_eq!(result.label, "hello");
     }
