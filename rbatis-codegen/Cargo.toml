@@ -28,4 +28,4 @@ proc-macro2 = "1.0"
 quote = "1.0"
 syn = { version = "2.0", features = ["full"] }
 url = "2.2.2"
-scraper = "0.26"
+scraper = "0.27"
