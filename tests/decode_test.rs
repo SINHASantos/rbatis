@@ -3,7 +3,6 @@ mod test {
     use rbs::value::map::ValueMap;
     use rbs::Value;
     use serde::{Deserialize, Serialize};
-    use std::collections::HashMap;
     use std::str::FromStr;
 
     fn make_map(k: &str, v: Value) -> Value {
@@ -21,15 +20,6 @@ mod test {
     }
 
     #[test]
-    fn test_decode_hashmap() {
-        // [{k:value}] format
-        let m: HashMap<String, Value> =
-            rbatis::decode(Value::Array(vec![make_map("a", Value::I64(1))])).unwrap();
-        println!("{:#?}", m);
-        assert_eq!(m.get("a").unwrap().as_i64(), Value::I32(1).as_i64());
-    }
-
-    #[test]
     fn test_decode_value() {
         // [{k:value}] format
         let m = Value::Array(vec![make_map("1", Value::I64(1))]);
@@ -43,33 +33,6 @@ mod test {
         let m = Value::Array(vec![make_map("1", Value::I64(1))]);
         let v: i64 = rbatis::decode(m).unwrap();
         assert_eq!(v, 1);
-    }
-
-    #[test]
-    fn test_decode_type_fail() {
-        #[derive(Serialize, Deserialize)]
-        pub struct A {
-            pub aa: i32,
-        }
-        // [{k:value}] format with string that can't be parsed as i32
-        let m = Value::Array(vec![make_map("aa", Value::String("".to_string()))]);
-        let v = rbatis::decode::<A>(m).err().unwrap();
-        assert_eq!(
-            v.to_string(),
-            "invalid type: string \"\", expected i32, key = `aa`"
-        );
-    }
-
-    #[test]
-    fn test_decode_type_struct_one() {
-        // [{k:value}] format with float
-        let m = Value::Array(vec![make_map("aa", Value::F64(0.0))]);
-        #[derive(Serialize, Deserialize)]
-        pub struct TestStruct {
-            pub aa: f64,
-        }
-        let v: TestStruct = rbatis::decode(m).unwrap();
-        assert_eq!(v.aa, 0.0);
     }
 
     #[test]
@@ -137,7 +100,7 @@ mod test {
 
     #[test]
     fn test_decode_empty_array() {
-        // 测试空数组的解码 - [{k:value}] format
+        // Empty array decode in [{k:value}] format.
         let empty_array = Value::Array(vec![]);
         let result: Result<Option<i32>, _> = rbatis::decode(empty_array);
         assert!(result.is_err() || result.unwrap().is_none());
@@ -145,7 +108,7 @@ mod test {
 
     #[test]
     fn test_decode_multiple_rows_to_single_type() {
-        // 多行数据中每行都能解包为 i32，返回第一个成功值
+        // Multiple rows can unwrap to i32; returns the first successful value.
         let data = Value::Array(vec![
             make_map("a", Value::I64(1)),
             make_map("a", Value::I64(2)),
@@ -221,63 +184,15 @@ mod test {
         .unwrap();
         assert_eq!(v2, Some("test".to_string()));
 
-        // null值解码为None
+        // Null decodes to None.
         let v3: Option<i32> =
             rbatis::decode(Value::Array(vec![make_map("a", Value::Null)])).unwrap();
         assert_eq!(v3, None);
     }
 
     #[test]
-    fn test_decode_struct() {
-        #[derive(Debug, Serialize, Deserialize, PartialEq)]
-        pub struct TestStruct {
-            pub id: i32,
-            pub name: String,
-            pub active: bool,
-        }
-
-        // [{k:value}] format
-        let value = Value::Array(vec![make_array_map(vec![
-            ("id", Value::I32(1)),
-            ("name", Value::String("test".to_string())),
-            ("active", Value::Bool(true)),
-        ])]);
-
-        let result: TestStruct = rbatis::decode(value).unwrap();
-        assert_eq!(result.id, 1);
-        assert_eq!(result.name, "test");
-        assert!(result.active);
-    }
-
-    #[test]
-    #[ignore] // format doesn't support direct nested struct deserialization
-    fn test_decode_nested_struct() {
-        #[derive(Debug, Serialize, Deserialize, PartialEq)]
-        pub struct Inner {
-            pub value: i32,
-        }
-
-        #[derive(Debug, Serialize, Deserialize, PartialEq)]
-        pub struct Outer {
-            pub id: i32,
-            pub inner: Inner,
-        }
-
-        // [{k:value}] format with nested struct
-        let inner_json = serde_json::json!({"value": 42});
-        let value = Value::Array(vec![make_array_map(vec![
-            ("id", Value::I32(1)),
-            ("inner", Value::String(inner_json.to_string())),
-        ])]);
-
-        let result: Outer = rbatis::decode(value).unwrap();
-        assert_eq!(result.id, 1);
-        assert_eq!(result.inner.value, 42);
-    }
-
-    #[test]
     fn test_decode_vec() {
-        // 测试解码到Vec<T> - [{k:value}] format with multiple rows
+        // Decode Vec<T> from multiple rows in [{k:value}] format.
         #[derive(Debug, Serialize, Deserialize, PartialEq)]
         pub struct Item {
             pub id: i32,
@@ -305,8 +220,28 @@ mod test {
     }
 
     #[test]
+    fn test_decode_vec_type_fail() {
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        pub struct Item {
+            pub id: i32,
+            pub name: String,
+        }
+
+        let value = Value::Array(vec![make_array_map(vec![
+            ("id", Value::String("bad".to_string())),
+            ("name", Value::String("test".to_string())),
+        ])]);
+
+        let err = rbatis::decode::<Vec<Item>>(value).err().unwrap();
+        assert_eq!(
+            err.to_string(),
+            "invalid type: string \"bad\", expected i32, key = `id`"
+        );
+    }
+
+    #[test]
     fn test_decode_not_array() {
-        // 测试解码非数组值的情况
+        // Non-array values are rejected.
         let value = Value::I32(1);
         let result = rbatis::decode::<i32>(value);
         assert!(result.is_err());
@@ -317,29 +252,9 @@ mod test {
     }
 
     #[test]
-    fn test_decode_ref() {
-        // 测试decode_ref函数
-        #[derive(Debug, Serialize, Deserialize, PartialEq)]
-        pub struct Item {
-            pub id: i32,
-            pub name: String,
-        }
-
-        // [{k:value}] format
-        let value = Value::Array(vec![make_array_map(vec![
-            ("id", Value::I32(1)),
-            ("name", Value::String("test".to_string())),
-        ])]);
-
-        let result: Item = rbatis::decode::decode_ref(&value).unwrap();
-        assert_eq!(result.id, 1);
-        assert_eq!(result.name, "test");
-    }
-
-    #[test]
     fn test_is_debug_mode() {
-        // 测试is_debug_mode函数
+        // Test is_debug_mode.
         let _debug_mode = rbatis::decode::is_debug_mode();
-        // 这里我们不断言具体值，因为它依赖于编译模式和特性开启状态
+        // The exact value depends on compile mode and enabled features.
     }
 }

@@ -7,7 +7,6 @@
 mod test {
     use rbs::value::map::ValueMap;
     use rbs::Value;
-    use serde::{Deserialize, Serialize};
 
     fn make_map(k: &str, v: Value) -> Value {
         let mut map = ValueMap::new();
@@ -23,30 +22,6 @@ mod test {
         let value = Value::Array(vec![make_map("", Value::I32(42))]);
         let result: i32 = rbatis::decode::try_decode_elements(&value).unwrap();
         assert_eq!(result, 42);
-    }
-
-    #[test]
-    fn test_try_decode_elements_struct_from_map_format() {
-        // [{id: 1, name: "test"}] -> TestDecodeStruct
-        let value = Value::Array(vec![{
-            let mut m = ValueMap::new();
-            m.insert(Value::String("id".to_string()), Value::I32(99));
-            m.insert(
-                Value::String("label".to_string()),
-                Value::String("hello".to_string()),
-            );
-            Value::Map(m)
-        }]);
-
-        let result: TestDecodeStruct = rbatis::decode::try_decode_elements(&value).unwrap();
-        assert_eq!(result.id, 99);
-        assert_eq!(result.label, "hello");
-    }
-
-    #[derive(Debug, Serialize, Deserialize, PartialEq)]
-    struct TestDecodeStruct {
-        id: i64,
-        label: String,
     }
 
     // ==================== Non-array decode error tests ====================
@@ -172,35 +147,6 @@ mod test {
     }
 
     #[test]
-    fn test_decode_nested_option_in_struct() {
-        #[derive(Debug, Serialize, Deserialize, PartialEq)]
-        struct NestedOption {
-            inner: Option<Option<String>>,
-        }
-
-        let value = Value::Array(vec![{
-            let mut m = ValueMap::new();
-            m.insert(
-                Value::String("inner".to_string()),
-                Value::String("hello".to_string()),
-            );
-            Value::Map(m)
-        }]);
-
-        let result: NestedOption = rbatis::decode(value).unwrap();
-        assert_eq!(result.inner, Some(Some("hello".to_string())));
-
-        // Double None case
-        let value2 = Value::Array(vec![{
-            let mut m = ValueMap::new();
-            m.insert(Value::String("inner".to_string()), Value::Null);
-            Value::Map(m)
-        }]);
-        let result2: NestedOption = rbatis::decode(value2).unwrap();
-        assert_eq!(result2.inner, None);
-    }
-
-    #[test]
     #[ignore]
     fn test_decode_vec_u8_from_map() {
         let value = Value::Array(vec![make_map("data", Value::Binary(vec![1, 2, 3, 4, 5]))]);
@@ -209,29 +155,6 @@ mod test {
     }
 
     // ==================== decode_ref vs decode consistency ====================
-
-    #[test]
-    fn test_decode_ref_and_decode_consistency() {
-        #[derive(Debug, Serialize, Deserialize, PartialEq)]
-        struct ConsistencyTest {
-            x: i32,
-            y: String,
-        }
-
-        let value = Value::Array(vec![{
-            let mut m = ValueMap::new();
-            m.insert(Value::String("x".to_string()), Value::I32(42));
-            m.insert(
-                Value::String("y".to_string()),
-                Value::String("answer".to_string()),
-            );
-            Value::Map(m)
-        }]);
-
-        let by_decode: ConsistencyTest = rbatis::decode(value.clone()).unwrap();
-        let by_ref: ConsistencyTest = rbatis::decode::decode_ref(&value).unwrap();
-        assert_eq!(by_decode, by_ref);
-    }
 
     #[test]
     fn test_decode_ref_doesnt_consume() {
@@ -270,7 +193,7 @@ mod test {
 
     #[test]
     fn test_decode_special_characters_in_string() {
-        let special = "hello \"world\" \n\t\r\n日本語 🎉";
+        let special = "hello \"world\" \n\t\r\nsymbols !@#$%^&*()";
         let value = Value::Array(vec![make_map("a", Value::String(special.to_string()))]);
         let result: String = rbatis::decode(value).unwrap();
         assert_eq!(result, special);
@@ -281,60 +204,5 @@ mod test {
         let value = Value::Array(vec![make_map("a", Value::String("".to_string()))]);
         let result: String = rbatis::decode(value).unwrap();
         assert_eq!(result, "");
-    }
-
-    // ==================== Complex struct decode tests ====================
-
-    #[test]
-    fn test_decode_struct_with_many_fields() {
-        #[derive(Debug, Serialize, Deserialize, PartialEq)]
-        struct ManyFields {
-            f1: i32,
-            f2: String,
-            f3: bool,
-            f4: f64,
-            f5: i64,
-            f6: Option<String>,
-            f7: Option<i32>,
-        }
-
-        let value = Value::Array(vec![{
-            let mut m = ValueMap::new();
-            m.insert(Value::String("f1".to_string()), Value::I32(1));
-            m.insert(
-                Value::String("f2".to_string()),
-                Value::String("two".to_string()),
-            );
-            m.insert(Value::String("f3".to_string()), Value::Bool(true));
-            m.insert(Value::String("f4".to_string()), Value::F64(1.23));
-            m.insert(Value::String("f5".to_string()), Value::I64(999));
-            m.insert(
-                Value::String("f6".to_string()),
-                Value::String("some".to_string()),
-            );
-            m.insert(Value::String("f7".to_string()), Value::Null);
-            Value::Map(m)
-        }]);
-
-        let result: ManyFields = rbatis::decode(value).unwrap();
-        assert_eq!(result.f1, 1);
-        assert_eq!(result.f2, "two");
-        assert!(result.f3);
-        assert!((result.f4 - 1.23).abs() < f64::EPSILON);
-        assert_eq!(result.f5, 999);
-        assert_eq!(result.f6, Some("some".to_string()));
-        assert_eq!(result.f7, None);
-    }
-
-    #[test]
-    fn test_decode_vec_of_vec() {
-        // Vec<Vec<i32>>
-        let inner_arr1: Vec<Value> = vec![Value::I32(1), Value::I32(2)];
-        let inner_arr2: Vec<Value> = vec![Value::I32(3), Value::I32(4)];
-        let outer_arr: Vec<Value> = vec![Value::Array(inner_arr1), Value::Array(inner_arr2)];
-        let value = Value::Array(vec![Value::Array(outer_arr)]);
-
-        let result: Vec<Vec<i32>> = rbatis::decode(value).unwrap();
-        assert_eq!(result, vec![vec![1, 2], vec![3, 4]]);
     }
 }

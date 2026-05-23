@@ -14,7 +14,6 @@ fn test_exec_query() {
         name: String,
     }
 
-    // 创建测试表
     let result = block_on(async move {
         rb.exec(
             "CREATE TABLE IF NOT EXISTS test_table (id INTEGER PRIMARY KEY, name TEXT)",
@@ -22,7 +21,6 @@ fn test_exec_query() {
         )
         .await?;
 
-        // 插入一些测试数据
         rb.exec(
             "INSERT INTO test_table (id, name) VALUES (?, ?)",
             vec![Value::I32(1), Value::String("test1".to_string())],
@@ -34,15 +32,15 @@ fn test_exec_query() {
         )
         .await?;
 
-        // 查询数据 - 使用 exec_decode
-        let result: TestRow = rb
+        let result: Vec<TestRow> = rb
             .exec_decode("SELECT * FROM test_table WHERE id = ?", vec![Value::I32(1)])
             .await?;
         Ok::<_, rbatis::Error>(result)
     });
 
     assert!(result.is_ok());
-    let row = result.unwrap();
+    let rows = result.unwrap();
+    let row = rows.first().unwrap();
     assert_eq!(row.id, 1);
     assert_eq!(row.name, "test1");
 }
@@ -69,14 +67,15 @@ fn test_exec_decode() {
             vec![Value::I32(3), Value::String("test3".to_string())],
         )
         .await?;
-        let result: TestRow = rb
+        let result: Vec<TestRow> = rb
             .exec_decode("SELECT * FROM test_table WHERE id = ?", vec![Value::I32(3)])
             .await?;
         Ok::<_, rbatis::Error>(result)
     });
 
     assert!(result.is_ok());
-    let row = result.unwrap();
+    let rows = result.unwrap();
+    let row = rows.first().unwrap();
     assert_eq!(row.id, 3);
     assert_eq!(row.name, "test3");
 }
@@ -97,7 +96,6 @@ fn test_transaction_commit() {
     }
 
     let result = block_on(async move {
-        // 创建测试表
         rb.exec(
             "CREATE TABLE IF NOT EXISTS tx_test (id INTEGER PRIMARY KEY, name TEXT)",
             vec![],
@@ -105,28 +103,25 @@ fn test_transaction_commit() {
         .await?;
         rb.exec("DELETE FROM tx_test", vec![]).await?;
 
-        // 开始事务
         let tx = rb.acquire_begin().await?;
 
-        // 在事务中执行插入
         tx.exec(
             "INSERT INTO tx_test (id, name) VALUES (?, ?)",
             vec![Value::I32(1), Value::String("tx_test".to_string())],
         )
         .await?;
 
-        // 提交事务
         tx.commit().await?;
 
-        // 事务提交后验证数据是否存在 - 使用 exec_decode
-        let result: TestRow = rb
+        let result: Vec<TestRow> = rb
             .exec_decode("SELECT * FROM tx_test WHERE id = ?", vec![Value::I32(1)])
             .await?;
         Ok::<_, rbatis::Error>(result)
     });
 
     assert!(result.is_ok());
-    let row = result.unwrap();
+    let rows = result.unwrap();
+    let row = rows.first().unwrap();
     assert_eq!(row.name, "tx_test");
 }
 
@@ -135,7 +130,6 @@ fn test_transaction_rollback() {
     let rb = make_test_rbatis();
 
     let result = block_on(async move {
-        // 创建测试表
         rb.exec(
             "CREATE TABLE IF NOT EXISTS tx_test (id INTEGER PRIMARY KEY, name TEXT)",
             vec![],
@@ -143,20 +137,16 @@ fn test_transaction_rollback() {
         .await?;
         rb.exec("DELETE FROM tx_test", vec![]).await?;
 
-        // 开始事务
         let tx = rb.acquire_begin().await?;
 
-        // 在事务中执行插入
         tx.exec(
             "INSERT INTO tx_test (id, name) VALUES (?, ?)",
             vec![Value::I32(2), Value::String("should_rollback".to_string())],
         )
         .await?;
 
-        // 回滚事务
         tx.rollback().await?;
 
-        // 事务回滚后验证数据是否不存在
         let result = rb
             .query("SELECT * FROM tx_test WHERE id = ?", vec![Value::I32(2)])
             .await?;
@@ -166,7 +156,6 @@ fn test_transaction_rollback() {
     assert!(result.is_ok());
     let result = result.unwrap();
     let arr = result.as_array().unwrap();
-    // 应该没有数据（回滚了）
     assert_eq!(arr.len(), 0);
 }
 
@@ -181,7 +170,6 @@ fn test_transaction_exec_decode() {
     }
 
     let result = block_on(async move {
-        // 创建测试表
         rb.exec(
             "CREATE TABLE IF NOT EXISTS tx_test (id INTEGER PRIMARY KEY, name TEXT)",
             vec![],
@@ -194,22 +182,20 @@ fn test_transaction_exec_decode() {
         )
         .await?;
 
-        // 开始事务
         let tx = rb.acquire_begin().await?;
 
-        // 使用事务执行查询并解码
-        let row: TestRow = tx
+        let rows: Vec<TestRow> = tx
             .exec_decode("SELECT * FROM tx_test WHERE id = ?", vec![Value::I32(3)])
             .await?;
 
-        // 提交事务
         tx.commit().await?;
 
-        Ok::<_, rbatis::Error>(row)
+        Ok::<_, rbatis::Error>(rows)
     });
 
     assert!(result.is_ok());
-    let row = result.unwrap();
+    let rows = result.unwrap();
+    let row = rows.first().unwrap();
     assert_eq!(row.id, 3);
     assert_eq!(row.name, "decode_test");
 }
@@ -223,9 +209,7 @@ fn test_nested_transaction() {
         name: String,
     }
 
-    // SQLite不支持真正的嵌套事务，但我们可以测试事务提交的基本功能
     let result = block_on(async move {
-        // 创建测试表
         rb.exec(
             "CREATE TABLE IF NOT EXISTS nested_tx_test (id INTEGER PRIMARY KEY, name TEXT)",
             vec![],
@@ -233,27 +217,22 @@ fn test_nested_transaction() {
         .await?;
         rb.exec("DELETE FROM nested_tx_test", vec![]).await?;
 
-        // 开始事务
         let tx = rb.acquire_begin().await?;
 
-        // 在事务中插入数据
         tx.exec(
             "INSERT INTO nested_tx_test (id, name) VALUES (?, ?)",
             vec![Value::I32(1), Value::String("tx1".to_string())],
         )
         .await?;
 
-        // 另一个数据
         tx.exec(
             "INSERT INTO nested_tx_test (id, name) VALUES (?, ?)",
             vec![Value::I32(2), Value::String("tx2".to_string())],
         )
         .await?;
 
-        // 提交事务
         tx.commit().await?;
 
-        // 验证插入的数据 - 使用 exec_decode
         let result: Vec<TestRow> = rb
             .exec_decode("SELECT * FROM nested_tx_test ORDER BY id", vec![])
             .await?;
@@ -277,7 +256,6 @@ fn test_transaction_with_defer() {
     }
 
     let result = block_on(async move {
-        // 创建测试表
         rb.exec(
             "CREATE TABLE IF NOT EXISTS defer_tx_test (id INTEGER PRIMARY KEY, name TEXT)",
             vec![],
@@ -285,16 +263,12 @@ fn test_transaction_with_defer() {
         .await?;
         rb.exec("DELETE FROM defer_tx_test", vec![]).await?;
 
-        // 使用defer模式开始事务
         let tx = rb.acquire_begin().await?;
 
-        // 注册defer回调，这将在tx被丢弃时自动提交事务
         let guard = tx.defer_async(|tx| async move {
-            // 这里可以执行额外的清理工作
             let _ = tx.commit().await;
         });
 
-        // 使用guard执行操作
         guard
             .tx
             .exec(
@@ -303,11 +277,9 @@ fn test_transaction_with_defer() {
             )
             .await?;
 
-        // 手动提交
         guard.commit().await?;
 
-        // 验证数据 - 使用 exec_decode
-        let result: TestRow = rb
+        let result: Vec<TestRow> = rb
             .exec_decode(
                 "SELECT * FROM defer_tx_test WHERE id = ?",
                 vec![Value::I32(1)],
@@ -317,7 +289,8 @@ fn test_transaction_with_defer() {
     });
 
     assert!(result.is_ok());
-    let row = result.unwrap();
+    let rows = result.unwrap();
+    let row = rows.first().unwrap();
     assert_eq!(row.name, "defer_test");
 }
 
@@ -332,9 +305,6 @@ fn test_executor_interface() {
     }
 
     let result = block_on(async move {
-        // 测试Executor trait的方法
-
-        // 创建测试表
         rb.exec(
             "CREATE TABLE IF NOT EXISTS exec_test (id INTEGER PRIMARY KEY, name TEXT)",
             vec![],
@@ -342,7 +312,6 @@ fn test_executor_interface() {
         .await?;
         rb.exec("DELETE FROM exec_test", vec![]).await?;
 
-        // 使用Executor trait的exec方法
         let exec_result = Executor::exec(
             &rb,
             "INSERT INTO exec_test (id, name) VALUES (?, ?)",
@@ -350,14 +319,13 @@ fn test_executor_interface() {
         )
         .await?;
 
-        // 验证执行结果
         assert_eq!(exec_result.rows_affected, 1);
 
-        // 使用rb的exec_decode方法
-        let row: TestRow = rb
+        let rows: Vec<TestRow> = rb
             .exec_decode("SELECT * FROM exec_test WHERE id = ?", vec![Value::I32(1)])
             .await?;
 
+        let row = rows.first().unwrap();
         assert_eq!(row.id, 1);
         assert_eq!(row.name, "exec_test");
 
