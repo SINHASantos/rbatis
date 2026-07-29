@@ -261,6 +261,7 @@ pub(crate) fn impl_macro_html_sql_impl(impl_block: &ItemImpl, args: &ParseArgs) 
             let item_fn = ItemFn {
                 attrs: func.attrs.clone(),
                 vis: func.vis.clone(),
+                modifiers: syn::FnModifiers::default(),
                 sig: func.sig.clone(),
                 block: Box::new(func.block.clone()),
             };
@@ -282,7 +283,8 @@ pub(crate) fn impl_macro_html_sql_impl(impl_block: &ItemImpl, args: &ParseArgs) 
 
     // Reconstruct impl block
     let attrs = &impl_block.attrs;
-    let defaultness = &impl_block.defaultness;
+    let defaultness = &impl_block.modifiers.defaultness;
+    let polarity = &impl_block.modifiers.polarity;
     let unsafety = &impl_block.unsafety;
     let impl_token = &impl_block.impl_token;
     let generics = &impl_block.generics;
@@ -291,8 +293,8 @@ pub(crate) fn impl_macro_html_sql_impl(impl_block: &ItemImpl, args: &ParseArgs) 
 
     // Manually handle trait_ field because its type is complex
     let trait_tokens = match trait_ {
-        Some((not, path, for_token)) => {
-            quote! { #not #path #for_token }
+        Some((path, for_token)) => {
+            quote! { #polarity #path #for_token }
         }
         None => quote! {},
     };
@@ -306,3 +308,6 @@ pub(crate) fn impl_macro_html_sql_impl(impl_block: &ItemImpl, args: &ParseArgs) 
     }
     .into()
 }
+
+
+
