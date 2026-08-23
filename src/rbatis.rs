@@ -1,4 +1,4 @@
-use crate::executor::{Executor, RBatisConnExecutor, RBatisTxExecutor};
+﻿use crate::executor::{Executor, RBatisConnExecutor, RBatisTxExecutor};
 use crate::intercept::intercept_log::LogInterceptor;
 use crate::intercept::intercept_page::PageIntercept;
 use crate::intercept::Intercept;
@@ -266,12 +266,13 @@ impl RBatis {
     /// let name = std::any::type_name::<Intercept>();
     /// ```
     pub fn remove_intercept_dyn(&self, name: &str) -> Option<Arc<dyn Intercept>> {
-        for (index, item) in self.intercepts.iter().enumerate() {
-            if item.name() == name {
-                return self.intercepts.remove(index);
-            }
+        // Find the index first and drop the read-locked iterator before
+        // removing, otherwise removing while iterating would deadlock on the
+        // container's read-write lock (and was a data race before that).
+        match self.intercepts.iter().position(|item| item.name() == name) {
+            Some(index) => self.intercepts.remove(index),
+            None => None,
         }
-        None
     }
 
     /// create table if not exists, add column if not exists
