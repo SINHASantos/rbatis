@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod test {
-    use rbatis_codegen::codegen::parser_html::parse_html;
+    use rbatis_codegen::codegen::parser_html::{load_mapper_map, parse_html};
 
     #[test]
     fn test_parse_line_feed() {
@@ -62,6 +62,53 @@ mod test {
         let code = token.to_string();
         println!("{}", token);
         assert!(!code.contains(r#"`"#));
+    }
+
+    #[test]
+    fn test_load_html_include_replace() {
+        let datas = load_mapper_map(
+            r#"
+            <sql id="aaa">`and name != ''`</sql>
+            <select id="custom_func">
+        `select * from biz_activity`
+        <include refid="aaa"></include>
+    </select>"#,
+        )
+        .unwrap();
+        assert_eq!(
+            datas.get("custom_func").unwrap().childs[1].childs[0].data,
+            "`and name != ''`"
+        );
+    }
+
+    #[test]
+    fn test_html_include_issue_628() {
+        let mut ig = vec![];
+        let token = parse_html(
+            r#"
+        <mapper>
+            <sql id="table_name">` activity `</sql>
+            <select id="select_by_condition">
+        `select * from <include refid="table_name"></include>`
+         </select>
+        </mapper>"#,
+            "select_by_condition",
+            &mut ig,
+        );
+        let code = token.to_string();
+        println!("{}", token);
+        // The `<include>` must be expanded into the referenced `<sql>` fragment,
+        // otherwise the generated SQL would silently lose the table name (issue #628).
+        assert!(
+            code.contains("select * from") && code.contains("activity"),
+            "include should be expanded into the referenced sql fragment, got: {}",
+            code
+        );
+        assert!(
+            !code.contains("include"),
+            "unresolved <include> should not remain in the generated code, got: {}",
+            code
+        );
     }
 
 }

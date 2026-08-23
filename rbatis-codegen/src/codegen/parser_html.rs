@@ -12,6 +12,7 @@ use crate::error::Error;
 
 // Constants for common strings
 const SQL_TAG: &str = "sql";
+const INCLUDE_TAG: &str = "include";
 pub(crate) const MAPPER_TAG: &str = "mapper";
 const IF_TAG: &str = "if";
 const TRIM_TAG: &str = "trim";
@@ -32,8 +33,11 @@ const DELETE_TAG: &str = "delete";
 /// Loads HTML content into a map of elements keyed by their ID
 pub fn load_mapper_map(html: &str) -> Result<BTreeMap<String, Element>, Error> {
     let elements = load_mapper_vec(html)?;
+    let mut sql_map = BTreeMap::new();
+    let processed_elements = include_replace(elements, &mut sql_map);
+
     let mut m = BTreeMap::new();
-    for x in elements {
+    for x in processed_elements {
         if let Some(v) = x.attrs.get("id") {
             m.insert(v.to_string(), x);
         }
@@ -56,6 +60,42 @@ pub fn load_mapper_vec(html: &str) -> Result<Vec<Element>, Error> {
 
     Ok(mappers)
 }
+
+/// Handles include directives and replaces them with referenced content
+fn include_replace(
+    elements: Vec<Element>,
+    sql_map: &mut BTreeMap<String, Element>,
+) -> Vec<Element> {
+    elements
+        .into_iter()
+        .map(|mut element| {
+            match element.tag.as_str() {
+                SQL_TAG => {
+                    let id = element
+                        .attrs
+                        .get("id")
+                        .expect("[rbatis-codegen] <sql> element must have id!");
+                    sql_map.insert(id.clone(), element.clone());
+                }
+                INCLUDE_TAG => {
+                    element = IncludeTagNode::from_element(&element).process_include(sql_map);
+                }
+                _ => {
+                    if let Some(id) = element.attrs.get("id").filter(|id| !id.is_empty()) {
+                        sql_map.insert(id.clone(), element.clone());
+                    }
+                }
+            }
+
+            if !element.childs.is_empty() {
+                element.childs = include_replace(element.childs, sql_map);
+            }
+
+            element
+        })
+        .collect()
+}
+
 /// Parses HTML content into a function TokenStream
 pub fn parse_html(html: &str, fn_name: &str, ignore: &mut Vec<String>) -> TokenStream {
     let processed_html = html
@@ -110,6 +150,13 @@ fn parse_elements(
             }
             SQL_TAG => {
                 let node = SqlTagNode::from_element(element);
+                let code = node.generate_tokens(&mut context, ignore);
+                body = quote! { #body #code };
+            }
+            INCLUDE_TAG => {
+                // Include tags are normally resolved earlier in `include_replace`
+                // (inside `load_mapper_map`). If one reaches this point, parse its children.
+                let node = IncludeTagNode::from_element(element);
                 let code = node.generate_tokens(&mut context, ignore);
                 body = quote! { #body #code };
             }
@@ -180,7 +227,10 @@ fn parse_elements(
             }
             WHEN_TAG => {}
             OTHERWISE_TAG => {}
-            _ => {}
+            _ => panic!(
+                "[rbatis-codegen] unsupported html tag: <{}>! please check your html_sql file.",
+                element.tag
+            ),
         }
     }
 
