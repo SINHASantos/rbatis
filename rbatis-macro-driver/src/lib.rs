@@ -1,3 +1,5 @@
+// suppress "正在创建库 xxx.lib 和对象 xxx.exp" noise from link.exe on Windows/MSVC
+#![allow(linker_messages)]
 #![allow(unused_assignments)]
 extern crate proc_macro;
 extern crate rbatis_codegen;
